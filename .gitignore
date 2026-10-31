@@ -7,3 +7,5 @@ data/*.csv
 .terraform/
 *.tfstate*
 node_modules/
+lambdas/*.zip
+out_*.json

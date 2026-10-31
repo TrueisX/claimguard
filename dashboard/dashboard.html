@@ -1,0 +1,227 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ClaimGuard Reviewer</title>
+<style>
+:root{--bg:#f4f6fb;--card:#fff;--ink:#14213d;--muted:#667085;--line:#e4e7ec;
+--brand:#0b2e5a;--low:#16a34a;--med:#d97706;--high:#dc2626;}
+*{box-sizing:border-box}
+body{margin:0;font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+background:var(--bg);color:var(--ink)}
+header{background:var(--brand);color:#fff;padding:14px 20px;display:flex;flex-wrap:wrap;
+gap:12px;align-items:center;justify-content:space-between}
+header h1{font-size:18px;margin:0}
+header small{opacity:.75;margin-left:8px;font-weight:400}
+.counts span{background:rgba(255,255,255,.15);border-radius:999px;padding:4px 12px;
+margin-left:8px;font-size:13px}
+main{display:grid;grid-template-columns:minmax(300px,1fr) minmax(320px,1.15fr);gap:16px;
+padding:16px;max-width:1200px;margin:0 auto}
+@media(max-width:820px){main{grid-template-columns:1fr}}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px}
+h2{font-size:13px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin:14px 0 8px}
+h2:first-child{margin-top:0}
+.row{display:grid;grid-template-columns:auto 1fr auto;gap:10px;align-items:center;
+padding:10px;border:1px solid var(--line);border-radius:10px;margin-bottom:8px;cursor:pointer}
+.row:hover{background:#f8fafc}
+.row.sel{border-color:var(--brand);box-shadow:0 0 0 2px rgba(11,46,90,.15)}
+.row small{color:var(--muted);display:block}
+.chip{font-size:11px;font-weight:700;color:#fff;border-radius:6px;padding:3px 8px}
+.chip.LOW{background:var(--low)}.chip.MEDIUM{background:var(--med)}.chip.HIGH{background:var(--high)}
+.meter{height:10px;background:#eef1f6;border-radius:6px;overflow:hidden;margin:6px 0 2px}
+.meter i{display:block;height:100%}
+.kv{display:grid;grid-template-columns:auto 1fr;gap:4px 14px;font-size:14px}
+.kv dt{color:var(--muted)}.kv dd{margin:0}
+ul.why{margin:0;padding-left:18px}ul.why li{margin:5px 0}
+table{width:100%;border-collapse:collapse;font-size:13px}
+td{padding:4px 0;border-bottom:1px solid var(--line)}td:last-child{text-align:right;font-weight:600}
+textarea,input[type=text]{width:100%;padding:8px;border:1px solid var(--line);border-radius:8px;
+font:inherit;margin-bottom:8px}
+.btns{display:flex;gap:8px;flex-wrap:wrap}
+button{border:0;border-radius:8px;padding:9px 14px;font:inherit;font-weight:600;cursor:pointer;color:#fff}
+button.ok{background:var(--low)}button.no{background:var(--high)}button.up{background:var(--med)}
+button.demo{background:#e8edf5;color:var(--ink)}
+.empty{color:var(--muted);padding:24px;text-align:center}
+#toast{position:fixed;bottom:18px;left:50%;transform:translateX(-50%);background:#14213d;color:#fff;
+padding:10px 18px;border-radius:10px;opacity:0;transition:opacity .25s;pointer-events:none}
+#toast.show{opacity:1}#toast.err{background:var(--high)}
+</style>
+</head>
+<body>
+<header>
+  <h1>ClaimGuard<small>Healthcare claims fraud triage</small></h1>
+  <div class="counts"><span id="cPri">Priority 0</span><span id="cRev">Review 0</span></div>
+</header>
+<main>
+  <section>
+    <div class="card">
+      <div id="queue"><div class="empty">Loading queue...</div></div>
+    </div>
+    <div class="card" style="margin-top:16px">
+      <h2>Demo: send a sample claim</h2>
+      <div class="btns">
+        <button class="demo" id="sNormal">Normal visit</button>
+        <button class="demo" id="sUpcode">Upcoding</button>
+        <button class="demo" id="sDup">Duplicate pair</button>
+      </div>
+    </div>
+  </section>
+  <section class="card" id="detail"><div class="empty">Select a claim to review it.</div></section>
+</main>
+<div id="toast"></div>
+<script>
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? "").replace(/[&<>"']/g,
+  c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const inr = n => "₹" + Number(n).toLocaleString("en-IN", {maximumFractionDigits: 0});
+const COLORS = {LOW:"var(--low)", MEDIUM:"var(--med)", HIGH:"var(--high)"};
+const LABELS = {
+  amount_ratio:"Amount vs typical price", expected_cost:"Typical price",
+  procedure_mismatch:"Procedure doesn't fit diagnosis", provider_claims_30d:"Provider claims (30 days)",
+  patient_claims_30d:"Patient claims (30 days)", provider_avg_amount:"Provider's average claim",
+  provider_patient_count:"Earlier visits to this provider", days_since_previous_claim:"Days since last visit",
+  duplicate_candidate:"Looks like a duplicate", same_day_provider_claim_count:"Provider claims earlier today",
+  same_day_patient_provider_count:"Same patient, same provider, earlier today"};
+let selected = null;
+
+async function api(path, opts) {
+  const r = await fetch(path, opts);
+  let body = {}; try { body = await r.json(); } catch (e) {}
+  return {ok: r.ok, status: r.status, body};
+}
+function toast(msg, err) {
+  const t = $("#toast"); t.textContent = msg; t.className = "show" + (err ? " err" : "");
+  setTimeout(() => t.className = "", 3200);
+}
+function fmt(k, v) {
+  v = Number(v);
+  if (k === "amount_ratio") return v.toFixed(2) + "×";
+  if (k === "expected_cost" || k === "provider_avg_amount") return inr(v);
+  if (k === "days_since_previous_claim") return v >= 999 ? "none on record" : v;
+  if (k === "procedure_mismatch" || k === "duplicate_candidate") return v ? "Yes" : "No";
+  return Number.isInteger(v) ? v : v.toFixed(2);
+}
+function reasons(c) {            // rule-based reading of the model's inputs
+  const f = c.features || {}, out = [];
+  if (f.procedure_mismatch >= 1)
+    out.push(`Procedure ${c.procedure_code} does not normally match the diagnosis "${c.diagnosis}"`);
+  if (f.amount_ratio >= 1.5)
+    out.push(`Billed ${Number(f.amount_ratio).toFixed(1)}× the typical price for this procedure`);
+  if (f.duplicate_candidate >= 1)
+    out.push(`Identical claim already submitted ${f.days_since_previous_claim} day(s) ago`);
+  else if (f.days_since_previous_claim < 999 && f.days_since_previous_claim <= 3)
+    out.push(`Patient visited this provider only ${f.days_since_previous_claim} day(s) ago`);
+  if (f.same_day_patient_provider_count >= 1)
+    out.push(`Patient was already billed by this provider ${f.same_day_patient_provider_count} time(s) today`);
+  if (f.provider_claims_30d >= 35)
+    out.push(`Provider has an unusual burst: ${f.provider_claims_30d} claims in 30 days`);
+  if (f.provider_patient_count >= 2)
+    out.push(`Patient has billed this provider ${f.provider_patient_count} times before`);
+  if (!out.length) out.push("No single strong signal; flagged by the combination of features");
+  return out;
+}
+
+async function loadQueue() {
+  const {ok, body} = await api("/api/queue");
+  if (!ok) { $("#queue").innerHTML = '<div class="empty">Could not load the queue.</div>'; return; }
+  $("#cPri").textContent = "Priority " + body.counts.PRIORITY;
+  $("#cRev").textContent = "Review " + body.counts.REVIEW;
+  const group = (name, title) => {
+    const rows = body.items.filter(i => i.review_queue === name);
+    if (!rows.length) return "";
+    return `<h2>${title} (${rows.length})</h2>` + rows.map(i => `
+      <div class="row ${i.claim_id === selected ? "sel" : ""}" data-id="${esc(i.claim_id)}">
+        <span class="chip ${esc(i.risk_band)}">${esc(i.risk_band)}</span>
+        <div><b>${esc(i.procedure_code)}</b> · ${esc(i.provider_id)}
+          <small>${esc(i.claim_date)} · ${esc(i.diagnosis)} · score ${Number(i.risk_score).toFixed(3)}</small></div>
+        <b>${inr(i.amount)}</b></div>`).join("");
+  };
+  const html = group("PRIORITY", "Priority queue") + group("REVIEW", "Review queue");
+  $("#queue").innerHTML = html || '<div class="empty">Nothing waiting for review.</div>';
+}
+$("#queue").addEventListener("click", e => {
+  const row = e.target.closest(".row"); if (row) openClaim(row.dataset.id);
+});
+
+async function openClaim(id) {
+  selected = id;
+  document.querySelectorAll(".row").forEach(r => r.classList.toggle("sel", r.dataset.id === id));
+  const {ok, body: c} = await api("/api/claims/" + encodeURIComponent(id));
+  if (!ok) { toast("Could not open that claim", true); return; }
+  const score = Number(c.risk_score || 0), band = c.risk_band || "";
+  const feats = Object.entries(c.features || {}).map(([k, v]) =>
+    `<tr><td>${esc(LABELS[k] || k)}</td><td>${esc(fmt(k, v))}</td></tr>`).join("");
+  $("#detail").innerHTML = `
+    <h2>Claim</h2>
+    <dl class="kv">
+      <dt>Provider</dt><dd>${esc(c.provider_id)}</dd>
+      <dt>Patient</dt><dd>${esc(c.patient_id)}</dd>
+      <dt>Date</dt><dd>${esc(c.claim_date)}</dd>
+      <dt>Diagnosis</dt><dd>${esc(c.diagnosis)}</dd>
+      <dt>Procedure</dt><dd>${esc(c.procedure_code)}</dd>
+      <dt>Amount</dt><dd><b>${inr(c.amount)}</b></dd>
+      <dt>Status</dt><dd>${esc(c.status)}</dd>
+    </dl>
+    <h2>Risk</h2>
+    <span class="chip ${esc(band)}">${esc(band)}</span> <b>${(score * 100).toFixed(1)}%</b> fraud probability
+    <div class="meter"><i style="width:${Math.min(100, score * 100)}%;background:${COLORS[band] || "#999"}"></i></div>
+    <h2>Signals</h2>
+    <ul class="why">${reasons(c).map(r => `<li>${esc(r)}</li>`).join("")}</ul>
+    <h2>What the model saw</h2>
+    <table>${feats}</table>
+    <h2>Decision</h2>
+    <input type="text" id="reviewer" placeholder="Your name" value="reviewer">
+    <textarea id="notes" rows="3" placeholder="Notes (optional)"></textarea>
+    <div class="btns">
+      <button class="ok" data-d="APPROVE">Approve</button>
+      <button class="no" data-d="REJECT">Reject (fraud)</button>
+      <button class="up" data-d="ESCALATE">Escalate</button>
+    </div>`;
+  $("#detail").querySelectorAll("button[data-d]").forEach(b =>
+    b.onclick = () => decide(c.claim_id, b.dataset.d));
+}
+
+async function decide(id, decision) {
+  const r = await api(`/api/claims/${encodeURIComponent(id)}/decision`, {
+    method: "POST", headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({decision, notes: $("#notes").value,
+                          reviewer: $("#reviewer").value || "reviewer"})});
+  if (r.ok) {
+    toast(decision + " recorded");
+    selected = null;
+    $("#detail").innerHTML = '<div class="empty">Decision saved. Select the next claim.</div>';
+    loadQueue();
+  } else toast(r.body.error || "Could not save the decision", true);
+}
+
+// ---- demo buttons: send sample claims through the live pipeline ----
+const rnd = () => "PT9" + String(Math.floor(Math.random() * 10000)).padStart(4, "0");
+const today = () => new Date().toISOString().slice(0, 10);
+const send = c => api("/claims", {method: "POST",
+  headers: {"Content-Type": "application/json"}, body: JSON.stringify(c)});
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+const later = () => setTimeout(loadQueue, 3500);
+
+$("#sNormal").onclick = async () => {
+  await send({provider_id:"P0010", patient_id:rnd(), claim_date:today(),
+              diagnosis:"fever", procedure_code:"CONS01", amount:820});
+  toast("Normal claim sent: it should be auto-approved"); later();
+};
+$("#sUpcode").onclick = async () => {
+  await send({provider_id:"P0020", patient_id:rnd(), claim_date:today(),
+              diagnosis:"fever", procedure_code:"SURG06", amount:310000});
+  toast("Upcoding claim sent: watch the Priority queue"); later();
+};
+$("#sDup").onclick = async () => {
+  const c = {provider_id:"P0030", patient_id:rnd(), claim_date:today(),
+             diagnosis:"fracture", procedure_code:"XRAY02", amount:1550};
+  await send(c); await sleep(1500); await send(c);
+  toast("Duplicate pair sent: the second one should reach Review"); later();
+};
+
+loadQueue();
+setInterval(loadQueue, 10000);
+</script>
+</body>
+</html>

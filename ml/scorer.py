@@ -1,6 +1,16 @@
 
 import json
 import math
+import struct
+
+NAN = float("nan")
+
+
+def f32(v):
+    try:
+        return struct.unpack("f", struct.pack("f", v))[0]
+    except (OverflowError, struct.error):
+        return v
 
 
 class FraudScorer:
@@ -10,25 +20,26 @@ class FraudScorer:
         self.features = m["features"]
         p = m["base_score"]
         self.margin0 = math.log(p / (1 - p))     # base score as a logit
-        self.trees = m["trees"]
+        self.trees = [
+            (t["left"], t["right"], [f32(c) for c in t["cond"]],
+             t["feat"], t["dl"])
+            for t in m["trees"]
+        ]
 
-    def _leaf_value(self, node, x):
-        while "leaf" not in node:
-            name = node["split"]
-            if name not in x and name[0] == "f" and name[1:].isdigit():
-                name = self.features[int(name[1:])]     # f3 -> feature #3
-            v = x.get(name)
-            if v is None or v != v:                      # missing / NaN
-                target = node["missing"]
+    @staticmethod
+    def _tree_value(tree, vals):
+        left, right, cond, feat, dl = tree
+        i = 0
+        while left[i] != -1:                    # -1 means "this node is a leaf"
+            v = vals[feat[i]]
+            if v != v:                          # missing / NaN
+                i = left[i] if dl[i] else right[i]
             else:
-                target = node["yes"] if v < node["split_condition"] else node["no"]
-            for child in node["children"]:
-                if child["nodeid"] == target:
-                    node = child
-                    break
-        return node["leaf"]
+                i = left[i] if v < cond[i] else right[i]
+        return cond[i]                          # a leaf stores its value here
 
     def score(self, x):
         """x: dict of feature name -> value. Returns fraud probability."""
-        margin = self.margin0 + sum(self._leaf_value(t, x) for t in self.trees)
+        vals = [NAN if x.get(n) is None else f32(x[n]) for n in self.features]
+        margin = self.margin0 + sum(self._tree_value(t, vals) for t in self.trees)
         return 1.0 / (1.0 + math.exp(-margin))

@@ -17,17 +17,23 @@ priority_url = sqs.create_queue(QueueName="claimguard-priority")["QueueUrl"]
 print("Queues ready: claimguard-review, claimguard-priority")
 
 
-def set_status(status, key_path="$.scoring.claim_id", end=True, next_state=None):
-    """A state that writes a status onto the claim in DynamoDB."""
+def set_status(status, key_path="$.scoring.claim_id", end=True, next_state=None,
+               queue=None):
+    """A state that writes a status (and optionally a review queue) onto the claim."""
+    expr = "SET #st = :s"
+    values = {":s": {"S": status}}
+    if queue:
+        expr += ", review_queue = :q"
+        values[":q"] = {"S": queue}
     state = {
         "Type": "Task",
         "Resource": "arn:aws:states:::dynamodb:updateItem",
         "Parameters": {
             "TableName": "Claims",
             "Key": {"claim_id": {"S.$": key_path}},
-            "UpdateExpression": "SET #st = :s",
+            "UpdateExpression": expr,
             "ExpressionAttributeNames": {"#st": "status"},   # reserved word
-            "ExpressionAttributeValues": {":s": {"S": status}},
+            "ExpressionAttributeValues": values,
         },
         "ResultPath": None,
     }
@@ -91,9 +97,9 @@ definition = {
         },
         "AutoApprove": set_status("AUTO_APPROVED"),
         "QueueForReview": send_to(review_url, "MEDIUM", "MarkPendingReview"),
-        "MarkPendingReview": set_status("PENDING_REVIEW"),
+        "MarkPendingReview": set_status("PENDING_REVIEW", queue="REVIEW"),
         "QueuePriority": send_to(priority_url, "HIGH", "MarkPriorityReview"),
-        "MarkPriorityReview": set_status("PRIORITY_REVIEW"),
+        "MarkPriorityReview": set_status("PRIORITY_REVIEW", queue="PRIORITY"),
         "MarkScoringFailed": set_status("SCORING_FAILED", key_path="$.claim_id",
                                         end=False, next_state="Failed"),
         "Failed": {"Type": "Fail", "Error": "ScoringFailed",

@@ -1,7 +1,6 @@
 import numpy as np
 import pandas as pd
 
-# Expected procedure costs in INR
 COST = {
     "CONS01": 800,
     "XRAY02": 1500,
@@ -20,14 +19,12 @@ VALID_PROCEDURES = {
 }
 
 FEATURES = [
-    "amount",
-    "day",
     "expected_cost",
     "amount_ratio",
     "procedure_mismatch",
-    "provider_claim_count",
+    "provider_claims_30d",
+    "patient_claims_30d",
     "provider_avg_amount",
-    "patient_claim_count",
     "provider_patient_count",
     "days_since_previous_claim",
     "duplicate_candidate",
@@ -36,22 +33,27 @@ FEATURES = [
 ]
 
 
+def prior_window_count(df, keys, days_back):
+    """For each claim: how many EARLIER claims in the same group fall within
+    the last `days_back` days. df must already be sorted by day."""
+    days = df["day"].to_numpy()
+    out = np.zeros(len(df))
+    for idx in df.groupby(keys).indices.values():
+        d = days[idx]
+        left = np.searchsorted(d, d - days_back, side="left")
+        out[idx] = np.arange(len(idx)) - left
+    return out
+
+
 def build_features(data):
     df = data.copy()
-
     df["claim_date"] = pd.to_datetime(df["claim_date"])
-
-    df = df.sort_values(
-        ["claim_date", "claim_id"]
-    ).reset_index(drop=True)
+    df = df.sort_values(["claim_date", "claim_id"]).reset_index(drop=True)
 
     start_date = pd.Timestamp("2025-11-01")
-    df["day"] = (df["claim_date"] - start_date).dt.days
+    df["day"] = (df["claim_date"] - start_date).dt.days   # used for windows/split only
 
-    df["expected_cost"] = (
-        df["procedure_code"].map(COST).fillna(0)
-    )
-
+    df["expected_cost"] = df["procedure_code"].map(COST).fillna(0)
     df["amount_ratio"] = (
         df["amount"] / df["expected_cost"].replace(0, np.nan)
     ).fillna(0)
@@ -61,9 +63,9 @@ def build_features(data):
         for dx, proc in zip(df["diagnosis"], df["procedure_code"])
     ]
 
-    df["provider_claim_count"] = (
-        df.groupby("provider_id").cumcount()
-    )
+    # Burst detection: earlier claims in the last 30 days
+    df["provider_claims_30d"] = prior_window_count(df, ["provider_id"], 29)
+    df["patient_claims_30d"] = prior_window_count(df, ["patient_id"], 29)
 
     df["provider_avg_amount"] = (
         df.groupby("provider_id")["amount"]
@@ -71,64 +73,30 @@ def build_features(data):
         .fillna(df["expected_cost"])
     )
 
-    df["patient_claim_count"] = (
-        df.groupby("patient_id").cumcount()
-    )
-
     df["provider_patient_count"] = (
         df.groupby(["provider_id", "patient_id"]).cumcount()
     )
 
-    previous_date = (
-        df.groupby(["provider_id", "patient_id"])["claim_date"]
-        .shift(1)
-    )
-
+    previous_date = df.groupby(["provider_id", "patient_id"])["claim_date"].shift(1)
     df["days_since_previous_claim"] = (
         (df["claim_date"] - previous_date).dt.days
-    )
+    ).fillna(999)
 
-    df["days_since_previous_claim"] = (
-        df["days_since_previous_claim"].fillna(999)
-    )
+    duplicate_key = ["provider_id", "patient_id", "diagnosis",
+                     "procedure_code", "amount"]
+    previous_duplicate_date = df.groupby(duplicate_key)["claim_date"].shift(1)
+    duplicate_gap = (df["claim_date"] - previous_duplicate_date).dt.days
+    df["duplicate_candidate"] = duplicate_gap.between(0, 3).astype(int)
 
-    duplicate_key = [
-        "provider_id",
-        "patient_id",
-        "diagnosis",
-        "procedure_code",
-        "amount",
-    ]
-
-    previous_duplicate_date = (
-        df.groupby(duplicate_key)["claim_date"].shift(1)
-    )
-
-    duplicate_gap = (
-        df["claim_date"] - previous_duplicate_date
-    ).dt.days
-
-    df["duplicate_candidate"] = (
-        duplicate_gap.between(0, 3)
-    ).astype(int)
-
+    # Earlier claims TODAY only (no peeking at later claims)
     df["same_day_provider_claim_count"] = (
-        df.groupby(["provider_id", "claim_date"])["claim_id"]
-        .transform("count")
+        df.groupby(["provider_id", "claim_date"]).cumcount()
     )
-
     df["same_day_patient_provider_count"] = (
-        df.groupby([
-            "provider_id",
-            "patient_id",
-            "claim_date",
-        ])["claim_id"].transform("count")
+        df.groupby(["provider_id", "patient_id", "claim_date"]).cumcount()
     )
 
     df[FEATURES] = (
-        df[FEATURES]
-        .replace([np.inf, -np.inf], np.nan)
-        .fillna(0)
+        df[FEATURES].replace([np.inf, -np.inf], np.nan).fillna(0)
     )
-
     return df

@@ -9,8 +9,10 @@ from decimal import Decimal
 import boto3
 
 s3 = boto3.client("s3")
+sfn = boto3.client("stepfunctions")
 table = boto3.resource("dynamodb").Table(os.environ["TABLE"])
 BUCKET = os.environ["BUCKET"]
+MACHINE_ARN = os.environ.get("STATE_MACHINE_ARN")
 
 PROCEDURES = {"CONS01", "XRAY02", "BLOOD03", "MRI04", "SURG05", "SURG06"}
 DIAGNOSES = {"fever", "fracture", "back_pain", "appendicitis", "cardiac"}
@@ -47,6 +49,24 @@ def respond(status, body):
             "body": json.dumps(body)}
 
 
+def start_pipeline(claim_id):
+    """Start the triage workflow. Returns True if it is running."""
+    if not MACHINE_ARN:
+        return False
+    kwargs = {"stateMachineArn": MACHINE_ARN,
+              "input": json.dumps({"claim_id": claim_id})}
+    if re.fullmatch(r"[A-Za-z0-9_-]{1,80}", claim_id):
+        kwargs["name"] = claim_id          # same claim can't be processed twice
+    try:
+        sfn.start_execution(**kwargs)
+        return True
+    except sfn.exceptions.ExecutionAlreadyExists:
+        return True
+    except Exception as e:                 # claim stays stored as RECEIVED
+        print(f"could not start pipeline for {claim_id}: {e}")
+        return False
+
+
 def lambda_handler(event, context):
     # API Gateway sends the claim as a JSON string in event["body"];
     # a direct test invoke sends the claim as the event itself.
@@ -74,4 +94,6 @@ def lambda_handler(event, context):
             "status": "RECEIVED"}      # DynamoDB needs Decimal, not float
     table.put_item(Item=item)
 
-    return respond(200, {"status": "RECEIVED", "claim_id": claim_id})
+    started = start_pipeline(claim_id)
+    return respond(202, {"status": "RECEIVED", "claim_id": claim_id,
+                         "pipeline_started": started})

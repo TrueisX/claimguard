@@ -36,7 +36,8 @@ def band(score):
 
 def lambda_handler(event, context):
     claim_id = event["claim_id"]
-    claim = table.get_item(Key={"claim_id": claim_id}).get("Item")
+    claim = table.get_item(Key={"claim_id": claim_id},
+                           ConsistentRead=True).get("Item")
     if claim is None:
         raise ValueError(f"claim not found: {claim_id}")
 

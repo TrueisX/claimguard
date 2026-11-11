@@ -1,6 +1,7 @@
-
+"""Create/update the review-api Lambda and attach it to the existing HTTP API."""
 import io
 import os
+import secrets
 import zipfile
 
 import boto3
@@ -8,30 +9,53 @@ import boto3
 REGION, NAME = "us-east-1", "review-api"
 account = boto3.client("sts").get_caller_identity()["Account"]
 role = f"arn:aws:iam::{account}:role/LabRole"
-ENV = {"Variables": {"TABLE": "Claims"}}
 
 buf = io.BytesIO()
 with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
     z.write("lambdas/review_api/handler.py", "handler.py")
-    if os.path.exists("dashboard/dashboard.html"):          # added in Task 13
+    z.write("lambdas/review_api/portal.py", "portal.py")
+    if os.path.exists("dashboard/dashboard.html"):
         z.write("dashboard/dashboard.html", "dashboard.html")
 code = buf.getvalue()
 
 lam = boto3.client("lambda", region_name=REGION)
 try:
-    lam.get_function(FunctionName=NAME)
+    old_env = lam.get_function_configuration(FunctionName=NAME).get(
+        "Environment", {}).get("Variables", {})
+    exists = True
+except lam.exceptions.ResourceNotFoundException:
+    old_env, exists = {}, False
+
+# Secrets are created once and then kept, so signed-in users stay signed in.
+env = {
+    "TABLE": "Claims",
+    "ACCOUNTS_TABLE": "ClaimGuardAccounts",
+    "TOKEN_SECRET": old_env.get("TOKEN_SECRET") or secrets.token_hex(32),
+    "ADMIN_PASSCODE": old_env.get("ADMIN_PASSCODE") or secrets.token_urlsafe(6),
+    "ENFORCE_AUTH": old_env.get("ENFORCE_AUTH", "false"),
+}
+ENV = {"Variables": env}
+
+if exists:
     lam.update_function_code(FunctionName=NAME, ZipFile=code)
     lam.get_waiter("function_updated_v2").wait(FunctionName=NAME)
     lam.update_function_configuration(FunctionName=NAME, Timeout=15,
                                       MemorySize=256, Environment=ENV)
     print("Updated review-api")
-except lam.exceptions.ResourceNotFoundException:
+else:
     lam.create_function(FunctionName=NAME, Runtime="python3.12", Role=role,
                         Handler="handler.lambda_handler", Code={"ZipFile": code},
                         Timeout=15, MemorySize=256, Environment=ENV)
     print("Created review-api")
 lam.get_waiter("function_active_v2").wait(FunctionName=NAME)
 lam.get_waiter("function_updated_v2").wait(FunctionName=NAME)
+
+if "ADMIN_PASSCODE" not in old_env:
+    print(f"\nADMIN PASSCODE (save it somewhere private): {env['ADMIN_PASSCODE']}\n")
+else:
+    print("Admin passcode unchanged (it is stored in the Lambda's settings)")
+print(f"Reviewer endpoints require sign-in: {env['ENFORCE_AUTH']}")
+
 fn_arn = lam.get_function(FunctionName=NAME)["Configuration"]["FunctionArn"]
 
 apigw = boto3.client("apigatewayv2", region_name=REGION)

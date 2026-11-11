@@ -1,14 +1,16 @@
-
+"""review-api: reviewer endpoints plus the sign-in and account APIs."""
 import base64
 import json
 import os
 import re
 from datetime import datetime, timezone
-from decimal import Decimal
 
 import boto3
 from boto3.dynamodb.conditions import Key
 from botocore.exceptions import ClientError
+
+import portal
+from portal import respond
 
 table = boto3.resource("dynamodb").Table(os.environ["TABLE"])
 INDEX = "review-queue-index"
@@ -23,18 +25,6 @@ DECISIONS = {
 LIST_FIELDS = ["claim_id", "provider_id", "patient_id", "claim_date", "diagnosis",
                "procedure_code", "amount", "risk_score", "risk_band", "status",
                "review_queue", "received_at"]
-
-
-def _json(o):
-    if isinstance(o, Decimal):
-        return int(o) if o == o.to_integral_value() else float(o)
-    raise TypeError(f"cannot serialize {type(o)}")
-
-
-def respond(status, body):
-    return {"statusCode": status,
-            "headers": {"Content-Type": "application/json"},
-            "body": json.dumps(body, default=_json)}
 
 
 def queue_items(name, limit=100):
@@ -93,6 +83,13 @@ def decide(claim_id, body):
     return respond(200, {"claim_id": claim_id, "decision": decision, "status": status})
 
 
+def staff_only(event, fn):
+    """Reviewer endpoints stay open until ENFORCE_AUTH=true (switched on in Step 4)."""
+    if os.environ.get("ENFORCE_AUTH") == "true":
+        return portal.guarded(event, portal.STAFF, lambda p: fn())
+    return fn()
+
+
 def lambda_handler(event, context):
     method = event["requestContext"]["http"]["method"]
     path = event["rawPath"]
@@ -116,12 +113,29 @@ def lambda_handler(event, context):
             html = "<h1>ClaimGuard</h1><p>Dashboard not deployed yet.</p>"
         return {"statusCode": 200,
                 "headers": {"Content-Type": "text/html; charset=utf-8"}, "body": html}
+
+    # ---- sign-in and accounts ----
+    if method == "POST" and path == "/api/login":
+        return portal.login(body)
+    if method == "GET" and path == "/api/demo-accounts":
+        return portal.demo_accounts()
+    if method == "GET" and path == "/api/me":
+        return portal.guarded(event, portal.ALL_ROLES, portal.me)
+    if method == "GET" and path == "/api/my/claims":
+        return portal.guarded(event, {"claimant"}, portal.my_claims)
+    if method == "GET" and path == "/api/config":
+        return portal.guarded(event, portal.STAFF, lambda p: portal.get_config())
+    m = re.fullmatch(r"/api/accounts/([A-Za-z0-9_-]{1,40})", path)
+    if m and method == "GET":
+        return portal.guarded(event, portal.STAFF, portal.account_detail, m.group(1))
+
+    # ---- reviewer endpoints ----
     if method == "GET" and path == "/api/queue":
-        return list_queue(params)
+        return staff_only(event, lambda: list_queue(params))
     m = re.fullmatch(r"/api/claims/([A-Za-z0-9_-]{1,80})", path)
     if m and method == "GET":
-        return get_claim(m.group(1))
+        return staff_only(event, lambda: get_claim(m.group(1)))
     m = re.fullmatch(r"/api/claims/([A-Za-z0-9_-]{1,80})/decision", path)
     if m and method == "POST":
-        return decide(m.group(1), body)
+        return staff_only(event, lambda: decide(m.group(1), body))
     return respond(404, {"error": "not found"})

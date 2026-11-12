@@ -4,14 +4,16 @@ import hashlib
 import hmac
 import json
 import os
+import re
 import time
 from datetime import date, timedelta
 from decimal import Decimal
 
 import boto3
-from boto3.dynamodb.conditions import Key
+from boto3.dynamodb.conditions import Attr, Key
 
 ddb = boto3.resource("dynamodb")
+lam = boto3.client("lambda")
 accounts = ddb.Table(os.environ.get("ACCOUNTS_TABLE", "ClaimGuardAccounts"))
 claims = ddb.Table(os.environ["TABLE"])
 SECRET = os.environ.get("TOKEN_SECRET", "").encode()
@@ -215,6 +217,54 @@ def my_claims(p):
             "status_label": STATUS_LABELS.get(i.get("status"), "In progress")}
            for i in items]          # no risk score, band, features or reviewer notes
     return respond(200, {"count": len(out), "claims": out})
+
+
+def hospitals(p):
+    kwargs = {"FilterExpression": Attr("kind").eq("HOSPITAL"),
+              "ProjectionExpression": "#id, #n, #c, #ns",
+              "ExpressionAttributeNames": {"#id": "account_id", "#n": "name",
+                                           "#c": "city", "#ns": "network_status"}}
+    items = []
+    while True:
+        resp = accounts.scan(**kwargs)
+        items += resp["Items"]
+        if "LastEvaluatedKey" not in resp:
+            break
+        kwargs["ExclusiveStartKey"] = resp["LastEvaluatedKey"]
+    items.sort(key=lambda i: i["name"])
+    return respond(200, {"hospitals": [
+        {"provider_id": i["account_id"], "name": i["name"], "city": i["city"],
+         "network_status": i.get("network_status")} for i in items]})
+
+
+def submit_claim(p, body):
+    """A claimant files a claim. The patient is always the signed-in claimant."""
+    acct = get_account(p["sub"])
+    if not acct:
+        return respond(404, {"error": "account not found"})
+    claim = {k: body[k] for k in ("provider_id", "claim_date", "diagnosis",
+                                  "procedure_code", "amount") if k in body}
+    claim["patient_id"] = acct["patient_id"]
+
+    problems = []
+    day = str(claim.get("claim_date", ""))
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", day):
+        if day > (date.today() + timedelta(days=1)).isoformat():    # a day of slack for time zones
+            problems.append("claim date cannot be in the future")
+        if day < acct["cover_from"]:
+            problems.append("claim date is before your policy started")
+    pid = str(claim.get("provider_id", ""))
+    hosp = get_account(pid) if pid else None
+    if not hosp or hosp.get("kind") != "HOSPITAL":
+        problems.append("choose a hospital from the list")
+    if problems:
+        return respond(400, {"status": "REJECTED", "errors": problems})
+
+    resp = lam.invoke(FunctionName="validate-claim", Payload=json.dumps(claim).encode())
+    out = json.loads(resp["Payload"].read())
+    if "statusCode" not in out:
+        return respond(502, {"error": "couldn't submit the claim right now"})
+    return respond(out["statusCode"], json.loads(out["body"]))
 
 
 def account_detail(p, account_id):

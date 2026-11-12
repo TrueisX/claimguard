@@ -1,4 +1,4 @@
-"""Create/update the review-api Lambda and attach it to the existing HTTP API."""
+"""Create/update the review-api Lambda (website + APIs) and attach it to the HTTP API."""
 import io
 import os
 import secrets
@@ -10,13 +10,23 @@ REGION, NAME = "us-east-1", "review-api"
 account = boto3.client("sts").get_caller_identity()["Account"]
 role = f"arn:aws:iam::{account}:role/LabRole"
 
-buf = io.BytesIO()
-with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
-    z.write("lambdas/review_api/handler.py", "handler.py")
-    z.write("lambdas/review_api/portal.py", "portal.py")
-    if os.path.exists("dashboard/dashboard.html"):
-        z.write("dashboard/dashboard.html", "dashboard.html")
-code = buf.getvalue()
+
+def build_zip():
+    """handler + portal, the new website (index.html and static/), and the old page as /legacy."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        z.write("lambdas/review_api/handler.py", "handler.py")
+        z.write("lambdas/review_api/portal.py", "portal.py")
+        z.write("dashboard/index.html", "index.html")
+        if os.path.exists("dashboard/dashboard.html"):
+            z.write("dashboard/dashboard.html", "dashboard.html")      # served at /legacy
+        for name in sorted(os.listdir("dashboard/static")):
+            z.write(os.path.join("dashboard/static", name), f"static/{name}")
+    return buf.getvalue()
+
+
+code = build_zip()
+print(f"Built zip: {len(code) / 1024:.1f} KB")
 
 lam = boto3.client("lambda", region_name=REGION)
 try:
@@ -39,13 +49,13 @@ ENV = {"Variables": env}
 if exists:
     lam.update_function_code(FunctionName=NAME, ZipFile=code)
     lam.get_waiter("function_updated_v2").wait(FunctionName=NAME)
-    lam.update_function_configuration(FunctionName=NAME, Timeout=15,
+    lam.update_function_configuration(FunctionName=NAME, Timeout=30,
                                       MemorySize=256, Environment=ENV)
     print("Updated review-api")
 else:
     lam.create_function(FunctionName=NAME, Runtime="python3.12", Role=role,
                         Handler="handler.lambda_handler", Code={"ZipFile": code},
-                        Timeout=15, MemorySize=256, Environment=ENV)
+                        Timeout=30, MemorySize=256, Environment=ENV)
     print("Created review-api")
 lam.get_waiter("function_active_v2").wait(FunctionName=NAME)
 lam.get_waiter("function_updated_v2").wait(FunctionName=NAME)

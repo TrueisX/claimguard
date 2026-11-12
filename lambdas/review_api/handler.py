@@ -1,4 +1,4 @@
-"""review-api: reviewer endpoints plus the sign-in and account APIs."""
+"""review-api: the website, reviewer endpoints, sign-in and account APIs."""
 import base64
 import json
 import os
@@ -14,7 +14,25 @@ from portal import respond
 
 table = boto3.resource("dynamodb").Table(os.environ["TABLE"])
 INDEX = "review-queue-index"
-HTML_PATH = os.path.join(os.path.dirname(__file__), "dashboard.html")
+HERE = os.path.dirname(__file__)
+CONTENT_TYPES = {".html": "text/html; charset=utf-8",
+                 ".css": "text/css; charset=utf-8",
+                 ".js": "application/javascript; charset=utf-8",
+                 ".svg": "image/svg+xml"}
+
+
+def serve_file(relative):
+    """Serve one of the website files that ship inside the Lambda zip."""
+    try:
+        with open(os.path.join(HERE, relative), encoding="utf-8") as f:
+            text = f.read()
+    except FileNotFoundError:
+        return respond(404, {"error": "not found"})
+    return {"statusCode": 200,
+            "headers": {"Content-Type": CONTENT_TYPES[os.path.splitext(relative)[1]],
+                        "Cache-Control": "no-cache"},
+            "body": text}
+
 
 # decision -> (new status, label for retraining, new queue or None = leave queue)
 DECISIONS = {
@@ -105,14 +123,14 @@ def lambda_handler(event, context):
         except json.JSONDecodeError:
             return respond(400, {"error": "body is not valid JSON"})
 
+    # ---- the website ----
     if method == "GET" and path in ("/", ""):
-        try:
-            with open(HTML_PATH, encoding="utf-8") as f:
-                html = f.read()
-        except FileNotFoundError:
-            html = "<h1>ClaimGuard</h1><p>Dashboard not deployed yet.</p>"
-        return {"statusCode": 200,
-                "headers": {"Content-Type": "text/html; charset=utf-8"}, "body": html}
+        return serve_file("index.html")
+    if method == "GET" and path == "/legacy":
+        return serve_file("dashboard.html")
+    m = re.fullmatch(r"/static/([A-Za-z0-9_-]{1,40}\.(?:css|js|svg))", path)
+    if m and method == "GET":
+        return serve_file("static/" + m.group(1))
 
     # ---- sign-in and accounts ----
     if method == "POST" and path == "/api/login":
@@ -123,6 +141,10 @@ def lambda_handler(event, context):
         return portal.guarded(event, portal.ALL_ROLES, portal.me)
     if method == "GET" and path == "/api/my/claims":
         return portal.guarded(event, {"claimant"}, portal.my_claims)
+    if method == "POST" and path == "/api/my/claims":
+        return portal.guarded(event, {"claimant"}, portal.submit_claim, body)
+    if method == "GET" and path == "/api/hospitals":
+        return portal.guarded(event, portal.ALL_ROLES, portal.hospitals)
     if method == "GET" and path == "/api/config":
         return portal.guarded(event, portal.STAFF, lambda p: portal.get_config())
     m = re.fullmatch(r"/api/accounts/([A-Za-z0-9_-]{1,40})", path)

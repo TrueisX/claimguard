@@ -59,8 +59,11 @@ const CG = (() => {
   }
 
   // ---------- pop-ups ----------
+  const openModals = [];            // only the top-most pop-up reacts to Escape
   function modal({ title, body, actions = [], wide = false }) {
     const prev = document.activeElement;
+    const me = {};
+    openModals.push(me);
     let open = true, resolveClosed;
     const closed = new Promise(r => { resolveClosed = r; });
     const titleEl = h("h2", { text: title });
@@ -69,10 +72,11 @@ const CG = (() => {
     const box = h("div", { class: "modal" + (wide ? " wide" : ""), role: "dialog", "aria-modal": "true", "aria-label": title },
       titleEl, bodyEl, actionsEl);
     const overlay = h("div", { class: "overlay", onmousedown: e => { if (e.target === overlay) close(); } }, box);
-    function onKey(e) { if (e.key === "Escape") close(); }
+    function onKey(e) { if (e.key === "Escape" && openModals[openModals.length - 1] === me) close(); }
     function close(value) {
       if (!open) return;
       open = false;
+      openModals.splice(openModals.indexOf(me), 1);
       overlay.remove();
       document.removeEventListener("keydown", onKey);
       if (prev && prev.focus) prev.focus();
@@ -215,8 +219,7 @@ const CG = (() => {
     app.replaceChildren(topbar(), h("main", { class: "page" },
       h("div", { class: "panel soon" },
         h("h2", { text: `${ROLE_LABEL[state.role]} console` }),
-        h("p", { text: "This view is the next step in the build. The original reviewer page still works in the meantime." }),
-        h("a", { class: "btn primary", href: "/legacy", text: "Open the original reviewer page" }))));
+        h("p", { text: "This view is the next step in the build." }))));
   }
 
   async function start() {

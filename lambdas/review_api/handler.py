@@ -39,7 +39,10 @@ DECISIONS = {
     "APPROVE": ("REVIEWER_APPROVED", 0, None),
     "REJECT": ("REVIEWER_REJECTED", 1, None),
     "ESCALATE": ("ESCALATED", None, "PRIORITY"),
+    "MANUAL_VERIFICATION": ("MANUAL_VERIFICATION", None, "VERIFICATION"),
 }
+NOTE_REQUIRED = {"REJECT", "MANUAL_VERIFICATION"}
+QUEUES = ("PRIORITY", "REVIEW", "VERIFICATION")
 LIST_FIELDS = ["claim_id", "provider_id", "patient_id", "claim_date", "diagnosis",
                "procedure_code", "amount", "risk_score", "risk_band", "status",
                "review_queue", "received_at"]
@@ -55,10 +58,9 @@ def queue_items(name, limit=100):
 
 def list_queue(params):
     wanted = (params.get("queue") or "ALL").upper()
-    priority = queue_items("PRIORITY") if wanted in ("ALL", "PRIORITY") else []
-    review = queue_items("REVIEW") if wanted in ("ALL", "REVIEW") else []
-    return respond(200, {"counts": {"PRIORITY": len(priority), "REVIEW": len(review)},
-                         "items": priority + review})
+    found = {q: (queue_items(q) if wanted in ("ALL", q) else []) for q in QUEUES}
+    return respond(200, {"counts": {q: len(found[q]) for q in QUEUES},
+                         "items": [i for q in QUEUES for i in found[q]]})
 
 
 def get_claim(claim_id):
@@ -66,18 +68,37 @@ def get_claim(claim_id):
     return respond(200, item) if item else respond(404, {"error": "claim not found"})
 
 
-def decide(claim_id, body):
+def decide(claim_id, body, p=None):
+    """Record a reviewer decision. p is the signed-in principal (None while auth is not enforced)."""
     decision = str(body.get("decision", "")).upper()
     if decision not in DECISIONS:
-        return respond(400, {"error": "decision must be APPROVE, REJECT or ESCALATE"})
+        return respond(400, {"error": "decision must be APPROVE, REJECT, ESCALATE or MANUAL_VERIFICATION"})
+    notes = str(body.get("notes", "")).strip()[:500]
+    if decision in NOTE_REQUIRED and len(notes) < 5:
+        return respond(400, {"error": "add a short note explaining this decision"})
     status, label, new_queue = DECISIONS[decision]
+
+    reviewer, reviewer_id = str(body.get("reviewer", "reviewer"))[:60], None
+    if p is not None:
+        if p["role"] != "insurer":
+            return respond(403, {"error": "only insurers can decide claims"})
+        acct = portal.get_account(p["sub"]) or {}
+        reviewer, reviewer_id = acct.get("full_name", p["sub"]), p["sub"]
+        if decision == "APPROVE":
+            claim = table.get_item(Key={"claim_id": claim_id}, ConsistentRead=True).get("Item")
+            limit = acct.get("approval_limit")
+            if claim and limit is not None and claim["amount"] > limit:
+                return respond(403, {"error": "this claim is above your approval limit - "
+                                              "escalate it to a more senior approver",
+                                     "approval_limit": limit})
 
     sets = ["#st = :st", "reviewer_decision = :d", "review_notes = :n",
             "reviewer = :r", "reviewed_at = :t"]
-    values = {":st": status, ":d": decision,
-              ":n": str(body.get("notes", ""))[:500],
-              ":r": str(body.get("reviewer", "reviewer"))[:60],
+    values = {":st": status, ":d": decision, ":n": notes, ":r": reviewer,
               ":t": datetime.now(timezone.utc).isoformat()}
+    if reviewer_id:
+        sets.append("reviewer_id = :rid")
+        values[":rid"] = reviewer_id
     if label is not None:
         sets.append("reviewer_label = :l")
         values[":l"] = label
@@ -102,10 +123,10 @@ def decide(claim_id, body):
 
 
 def staff_only(event, fn):
-    """Reviewer endpoints stay open until ENFORCE_AUTH=true (switched on in Step 4)."""
+    """fn(principal) runs for signed-in staff. While ENFORCE_AUTH is off it runs open, with None."""
     if os.environ.get("ENFORCE_AUTH") == "true":
-        return portal.guarded(event, portal.STAFF, lambda p: fn())
-    return fn()
+        return portal.guarded(event, portal.STAFF, fn)
+    return fn(None)
 
 
 def lambda_handler(event, context):
@@ -153,11 +174,14 @@ def lambda_handler(event, context):
 
     # ---- reviewer endpoints ----
     if method == "GET" and path == "/api/queue":
-        return staff_only(event, lambda: list_queue(params))
+        return staff_only(event, lambda p: list_queue(params))
     m = re.fullmatch(r"/api/claims/([A-Za-z0-9_-]{1,80})", path)
     if m and method == "GET":
-        return staff_only(event, lambda: get_claim(m.group(1)))
+        return staff_only(event, lambda p: get_claim(m.group(1)))
+    m = re.fullmatch(r"/api/claims/([A-Za-z0-9_-]{1,80})/context", path)
+    if m and method == "GET":
+        return portal.guarded(event, portal.STAFF, portal.claim_context, m.group(1))
     m = re.fullmatch(r"/api/claims/([A-Za-z0-9_-]{1,80})/decision", path)
     if m and method == "POST":
-        return staff_only(event, lambda: decide(m.group(1), body))
+        return staff_only(event, lambda p: decide(m.group(1), body, p))
     return respond(404, {"error": "not found"})

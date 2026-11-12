@@ -1,0 +1,66 @@
+/* Insurer console additions. Colours come from the tokens in app.css. */
+.tabs { display: flex; gap: 6px; margin-bottom: 22px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+.tab { font: 600 .9375rem var(--body); padding: 10px 16px; border: 0; background: none; color: var(--muted);
+  cursor: pointer; border-bottom: 3px solid transparent; margin-bottom: -1px; }
+.tab[aria-selected="true"] { color: var(--ink); border-bottom-color: var(--accent); }
+
+.stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; margin-bottom: 20px; }
+@media (max-width: 720px) { .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.stat { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; border-left: 5px solid var(--line); }
+.stat.bad { border-left-color: var(--bad); }
+.stat.warn { border-left-color: #D9930D; }
+.stat.info { border-left-color: var(--info); }
+.stat.accent { border-left-color: var(--accent); }
+.stat .stat-num { font: 700 1.9rem var(--display); line-height: 1.1; }
+.stat .stat-label { color: var(--muted); font-size: .875rem; }
+
+.id-card { background: var(--accent); color: #fff; border-radius: 18px; padding: 22px; display: grid; gap: 14px; }
+.id-card .pc-plan { font-size: 1.5rem; }
+.id-card .limit { font: 700 1.9rem var(--display); }
+.id-card small { opacity: .85; }
+
+.risk { display: flex; align-items: center; gap: 10px; min-width: 110px; }
+.risk-num { font-weight: 700; width: 2.2ch; text-align: right; }
+.risk-bar { flex: 1; height: 9px; background: #E6EAF0; border-radius: 5px; overflow: hidden; min-width: 50px; }
+.risk-fill { height: 100%; border-radius: 5px; background: var(--info); }
+.risk-fill.bad { background: var(--bad); }
+.risk-fill.warn { background: #D9930D; }
+.risk.large .risk-num { font: 700 2.4rem var(--display); width: auto; }
+.risk.large .risk-bar { height: 14px; border-radius: 7px; }
+
+.lookup { display: flex; gap: 8px; }
+.lookup input { flex: 1; min-width: 0; }
+
+.modal.xwide { width: min(880px, 100%); }
+.modal.xwide .modal-actions { flex-wrap: wrap; }
+.case-head { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 6px 16px; align-items: baseline; }
+.case-head .amount { font: 700 1.9rem var(--display); }
+.case-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-top: 16px; }
+@media (max-width: 720px) { .case-grid { grid-template-columns: minmax(0, 1fr); } }
+.card { border: 1px solid var(--line); border-radius: 10px; padding: 14px; min-width: 0; }
+.card h3 { font-size: 1rem; margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.card .rows > div { grid-template-columns: 104px 1fr; padding: 6px 0; font-size: .9375rem; }
+.facts { margin: 0; padding-left: 18px; display: grid; gap: 5px; font-size: .9375rem; }
+.facts li.flag { color: var(--bad); font-weight: 600; }
+.inputs { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 6px 18px; margin: 0; }
+.inputs > div { display: flex; justify-content: space-between; gap: 10px; padding: 5px 0; border-bottom: 1px dashed var(--line); font-size: .9375rem; }
+.inputs dt { color: var(--muted); }
+.inputs dd { font-weight: 600; font-variant-numeric: tabular-nums; }
+.mini { width: 100%; border-collapse: collapse; font-size: .875rem; }
+.mini th { text-align: left; color: var(--muted); font-weight: 600; padding: 4px 6px; }
+.mini td { padding: 6px; border-top: 1px solid var(--line); }
+.mini .right { text-align: right; }
+.section-title { font: 700 .8125rem var(--body); letter-spacing: .06em; text-transform: uppercase; color: var(--muted); margin: 20px 0 8px; }
+textarea { min-height: 84px; resize: vertical; }
+
+.crit-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; align-items: start; }
+@media (max-width: 920px) { .crit-cols { grid-template-columns: minmax(0, 1fr); } }
+.crit-list { display: grid; gap: 10px; }
+.crit { border: 1px solid var(--line); border-left: 5px solid var(--bad); border-radius: 10px; padding: 12px 14px; background: var(--panel); }
+.crit.legit { border-left-color: var(--ok); }
+.crit.planned { border-left-style: dashed; background: #FAFBFC; }
+.crit-top { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.crit-id { font: 700 .8125rem var(--display); background: #E8ECF1; border-radius: 6px; padding: 1px 8px; }
+.crit-title { font-weight: 600; }
+.crit p { margin-top: 6px; color: var(--muted); font-size: .9375rem; }
+.crit .attrs { margin-top: 6px; display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: .8125rem; color: var(--muted); }

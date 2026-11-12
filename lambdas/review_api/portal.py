@@ -285,3 +285,26 @@ def get_config():
     route = accounts.get_item(Key={"account_id": "CONFIG#routing"}).get("Item", {})
     route = {k: v for k, v in route.items() if k not in ("account_id", "kind")}
     return respond(200, {"criteria": crit.get("criteria", []), "routing": route})
+
+
+def claim_context(p, claim_id):
+    """Everything an insurer needs beside a claim: the claimant, the hospital, recent history."""
+    claim = claims.get_item(Key={"claim_id": claim_id}, ConsistentRead=True).get("Item")
+    if not claim:
+        return respond(404, {"error": "claim not found"})
+    out = {"claim": claim, "claimant": None, "hospital": None, "history": []}
+
+    who = get_account(claim["patient_id"])
+    if who and who.get("kind") == "CLAIMANT" and who.get("patient_id") == claim["patient_id"]:
+        out["claimant"] = {"profile": who, "summary": claimant_summary(who)}
+    hosp = get_account(claim["provider_id"])
+    if hosp and hosp.get("kind") == "HOSPITAL":
+        out["hospital"] = {"profile": hosp, "summary": hospital_summary(claim["provider_id"])}
+
+    past = [i for i in query_all("patient-index", "patient_id", claim["patient_id"])
+            if i["claim_id"] != claim_id]
+    past.sort(key=lambda i: (i["claim_date"], i.get("received_at", "")), reverse=True)
+    out["history"] = [{k: i.get(k) for k in ("claim_id", "claim_date", "provider_id", "diagnosis",
+                                              "procedure_code", "amount", "status")}
+                      for i in past[:8]]
+    return respond(200, out)

@@ -42,7 +42,7 @@ env = {
     "ACCOUNTS_TABLE": "ClaimGuardAccounts",
     "TOKEN_SECRET": old_env.get("TOKEN_SECRET") or secrets.token_hex(32),
     "ADMIN_PASSCODE": old_env.get("ADMIN_PASSCODE") or secrets.token_urlsafe(6),
-    "ENFORCE_AUTH": old_env.get("ENFORCE_AUTH", "false"),
+    "ENFORCE_AUTH": os.environ.get("ENFORCE_AUTH") or old_env.get("ENFORCE_AUTH", "false"),
 }
 ENV = {"Variables": env}
 

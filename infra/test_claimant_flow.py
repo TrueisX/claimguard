@@ -41,8 +41,8 @@ s, text = call("GET", "/", raw=True)
 check("home page is the new site", "ClaimGuard" in text and "/static/app.js" in text, True)
 check("unknown static file", call("GET", "/static/handler.py", raw=True)[0], 404)
 
-print("\nClaimant PT00000")
-s, d = call("POST", "/api/login", {"account_id": "PT00000"})
+print("\nClaimant PT00120")
+s, d = call("POST", "/api/login", {"account_id": "PT00120"})
 check("login", s, 200)
 token = d["token"]
 s, d = call("GET", "/api/hospitals", token=token)
@@ -66,7 +66,7 @@ for _ in range(40):
     if final and final["status"] not in ("RECEIVED", "SCORED"):
         break
 print()
-check("claim is listed under PT00000, not the patient_id sent", final is not None, True)
+check("claim is listed under PT00120, not the patient_id sent", final is not None, True)
 check("normal claim ends AUTO_APPROVED", final and final["status"], "AUTO_APPROVED")
 leaks = [k for k in ("risk_score", "risk_band", "features") if final and k in final]
 check("claimant never sees risk data", leaks, [])

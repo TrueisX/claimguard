@@ -9,3 +9,4 @@ data/*.csv
 node_modules/
 lambdas/*.zip
 out_*.json
+deploy/.container.env

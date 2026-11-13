@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: claimguard-web
+  namespace: claimguard
+spec:
+  selector: {app: claimguard-web}
+  ports:
+    - port: 80
+      targetPort: 8080

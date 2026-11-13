@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: claimguard-config
+  namespace: claimguard
+data:
+  TABLE: "Claims"
+  ACCOUNTS_TABLE: "ClaimGuardAccounts"
+  ENFORCE_AUTH: "true"
+  AWS_DEFAULT_REGION: "us-east-1"
+  AWS_REGION: "us-east-1"

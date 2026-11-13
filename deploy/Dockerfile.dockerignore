@@ -1,0 +1,11 @@
+.git
+.venv
+venv
+__pycache__
+*.pyc
+.env
+data
+ml
+*.csv
+*.zip
+node_modules

@@ -181,6 +181,13 @@ def lambda_handler(event, context):
         return portal.guarded(event, ADMIN, admin.health)
     if method == "GET" and path == "/api/admin/accounts":
         return portal.guarded(event, ADMIN, admin.list_accounts, params)
+    if path == "/api/admin/attack":
+        if method == "POST":
+            return portal.guarded(event, ADMIN, admin.start_attack)
+        if method == "GET":
+            return portal.guarded(event, ADMIN, admin.attack_status)
+    if method == "POST" and path == "/api/admin/attack/clear":
+        return portal.guarded(event, ADMIN, admin.clear_attack)
     m = re.fullmatch(r"/api/admin/accounts/([A-Za-z0-9_-]{1,40})/status", path)
     if m and method == "POST":
         return portal.guarded(event, ADMIN, admin.set_status, m.group(1), body)

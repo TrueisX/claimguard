@@ -1,7 +1,7 @@
 "use strict";
 /* Platform admin console: overview, system health, accounts, rules and model. */
 (() => {
-  const { h, api, toast, inr, dateFmt, state } = CG;
+  const { h, api, toast, modal, inr, dateFmt, state } = CG;
   const U = () => CG.ui;                       // helpers shared from insurer.js, read when needed
   const pctText = v => v === null || v === undefined ? "n/a" : v + "%";
 
@@ -25,7 +25,7 @@
     const me = state.profile;
     const ui = { tab: "overview", overview: null, health: null, accounts: null, kind: "", q: "", config: null };
     const content = h("div", { class: "main-col" });
-    const TABS = [["overview", "Overview"], ["health", "System health"], ["accounts", "Accounts"], ["rules", "Rules & model"]];
+    const TABS = [["overview", "Overview"], ["health", "System health"], ["accounts", "Accounts"], ["rules", "Rules & model"], ["attack", "Attack mode"]];
     const tabEls = TABS.map(([k, label]) => h("button", { class: "tab", type: "button", role: "tab", "data-tab": k, onclick: () => setTab(k), text: label }));
 
     root.replaceChildren(CG.topbar(), h("main", { class: "page" },
@@ -37,9 +37,10 @@
 
     function setTab(t) {
       ui.tab = t;
+      clearTimeout(ui.timer);
       tabEls.forEach(el => el.setAttribute("aria-selected", String(el.dataset.tab === t)));
       content.replaceChildren(h("p", { class: "muted", text: "Loading..." }));
-      ({ overview: loadOverview, health: loadHealth, accounts: loadAccounts, rules: loadRules })[t]();
+      ({ overview: loadOverview, health: loadHealth, accounts: loadAccounts, rules: loadRules, attack: loadAttack })[t]();
     }
     const failed = (what, retry) => content.replaceChildren(h("div", { class: "panel empty" }, h("p", { text: `Couldn't load ${what}.` }),
       h("button", { class: "btn", type: "button", onclick: retry, text: "Try again" })));
@@ -143,6 +144,77 @@
       if (a.kind === "CLAIMANT") return h("span", { class: "chip " + (a.policy_status === "Suspended" ? "bad" : "ok"), text: a.policy_status || "Active" });
       if (a.kind === "HOSPITAL") return h("span", { class: "chip " + (a.network_status === "In-network" ? "ok" : "warn"), text: a.network_status || "Unknown" });
       return h("span", { class: "chip muted", text: U().pretty(a.kind.toLowerCase()) });
+    }
+
+
+    // ---------- attack mode ----------
+    const PATTERNS = [
+      ["Upcoding", "A fever billed as major surgery, three times, at three different hospitals."],
+      ["Duplicate billing", "One policyholder billed three identical X-ray claims at the same hospital on the same day."],
+      ["Provider burst", "One hospital suddenly bills three high MRI claims for back pain, for three different patients."]];
+
+    async function loadAttack() {
+      const r = await api("/api/admin/attack");
+      if (!r.ok) return failed("attack mode", loadAttack);
+      if (ui.tab !== "attack") return;
+      drawAttack(r.data);
+      if (r.data.active && !r.data.done) ui.timer = setTimeout(() => { if (ui.tab === "attack") loadAttack(); }, 1500);
+    }
+
+    function drawAttack(d) {
+      const u = U();
+      if (!d.active) {
+        content.replaceChildren(h("section", { class: "panel" }, h("h2", { text: "Attack mode" }),
+          h("p", { class: "muted", style: "margin:6px 0 14px", text: "Send a burst of fake fraud through the real pipeline and watch the model react. The claims use demo policyholders and hospitals, show up in the insurer queue, and can be cleared afterwards." }),
+          h("div", { class: "crit-list" }, PATTERNS.map(([t, x]) => h("div", { class: "crit" }, h("div", { class: "crit-top" }, h("span", { class: "crit-title", text: t })), h("p", { text: x })))),
+          h("div", { style: "margin-top:16px" }, h("button", { class: "btn primary", type: "button", onclick: launch, text: "Launch attack (9 claims)" }))));
+        return;
+      }
+      const pending = d.claims.filter(c => !c.status || c.status === "RECEIVED" || c.status === "SCORED").length;
+      const kinds = ["Upcoding", "Duplicate billing", "Provider burst"];
+      content.replaceChildren(
+        h("div", { class: "stats", style: "margin-bottom:0" },
+          h("div", { class: "stat accent" }, h("div", { class: "stat-num num", text: String(d.total) }), h("div", { class: "stat-label", text: "Fake claims sent" })),
+          h("div", { class: "stat ok" }, h("div", { class: "stat-num num", text: String(d.caught) }), h("div", { class: "stat-label", text: "Sent to a human" })),
+          h("div", { class: "stat bad" }, h("div", { class: "stat-num num", text: String(d.missed) }), h("div", { class: "stat-label", text: "Slipped through (auto-approved)" })),
+          h("div", { class: "stat info" }, h("div", { class: "stat-num num", text: String(pending) }), h("div", { class: "stat-label", text: "Still being scored" }))),
+        h("section", { class: "panel" },
+          h("div", { class: "panel-head" }, h("h2", { text: d.done ? "Result" : "Scoring..." }),
+            h("button", { class: "btn", type: "button", onclick: clear, text: "Clear demo claims" })),
+          d.done ? h("p", { text: `The model sent ${d.caught} of ${d.total} fake claims to a human.${d.missed ? ` ${d.missed} ${d.missed === 1 ? "was" : "were"} auto-approved. The model is not perfect, which is why humans review the rest.` : ""} Sign in as an insurer to see them in the queue.` })
+                 : h("p", { class: "muted", text: "Claims are going through the scoring workflow. This page updates by itself." }),
+          h("div", { class: "table-wrap", style: "margin-top:12px" }, h("table", { class: "claims" },
+            h("thead", null, h("tr", null, h("th", { text: "Pattern" }), h("th", { text: "Claim" }), h("th", { class: "right", text: "Amount" }), h("th", { text: "Risk" }), h("th", { text: "Outcome" }))),
+            h("tbody", null, [...d.claims].sort((a, b) => kinds.indexOf(a.pattern) - kinds.indexOf(b.pattern)).map(c => h("tr", { style: "cursor:default" },
+              h("td", { text: c.pattern }),
+              h("td", null, h("div", { text: `${u.PROC[c.procedure_code] || c.procedure_code || "..."}` }), h("div", { class: "muted", style: "font-size:.8125rem", text: c.provider_id || "" })),
+              h("td", { class: "right num nowrap", text: c.amount ? inr(c.amount) : "" }),
+              h("td", null, c.risk_score != null ? u.riskMeter(c.risk_score, c.review_queue) : h("span", { class: "muted", text: "..." })),
+              h("td", null, u.statusChip(c.status)))))))));
+    }
+
+    function launch() {
+      const m = modal({ title: "Launch the attack?", body: h("div", null,
+        h("p", { text: "This sends 9 fake claims through the real pipeline: upcoding, duplicate billing and a provider burst. They appear in the insurer queue until you clear them." }),
+        h("p", { class: "form-error", role: "alert" })),
+        actions: [{ label: "Cancel" }, { label: "Launch", kind: "primary", onClick: go }] });
+      async function go() {
+        m.setActions([{ label: "Sending claims...", kind: "primary", disabled: true }]);
+        const r = await api("/api/admin/attack", { method: "POST" });
+        if (!r.ok) { m.box.querySelector(".form-error").textContent = r.data.error || "Couldn't start the attack."; m.setActions([{ label: "Close" }]); return; }
+        m.close(true);
+        toast(`${r.data.started} fake claims sent.`, "ok");
+        loadAttack();
+      }
+    }
+
+    async function clear() {
+      const ok = await CG.confirm({ title: "Clear the demo claims?", message: "The fake claims are deleted from the system, including any decisions made on them.", confirmLabel: "Clear", kind: "danger" });
+      if (!ok) return;
+      const r = await api("/api/admin/attack/clear", { method: "POST" });
+      if (!r.ok) { toast("Couldn't clear them.", "bad"); return; }
+      toast(`${r.data.cleared} demo claims cleared.`, "ok");
+      loadAttack();
     }
 
     // ---------- rules and model ----------

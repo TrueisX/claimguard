@@ -1,8 +1,10 @@
 """admin: platform overview, system health, account management (admin role only)."""
+import json
 import os
+import random
 import time
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 
 import boto3
 
@@ -51,7 +53,7 @@ def _scan_accounts():
         resp = portal.accounts.scan(**kwargs)
         items += resp["Items"]
         if "LastEvaluatedKey" not in resp:
-            return [i for i in items if not str(i["account_id"]).startswith("CONFIG#")]
+            return [i for i in items if not str(i["account_id"]).startswith(("CONFIG#", "DEMO#"))]
         kwargs["ExclusiveStartKey"] = resp["LastEvaluatedKey"]
 
 
@@ -210,3 +212,78 @@ def set_status(p, account_id, body):
         UpdateExpression="SET policy_status = :s, status_changed_by = :by, status_changed_at = :t",
         ExpressionAttributeValues={":s": status, ":by": p["sub"], ":t": datetime.now(timezone.utc).isoformat()})
     return respond(200, {"account_id": account_id, "policy_status": status})
+
+
+# ---------- attack mode: a labelled burst of fake fraud for live demos ----------
+ATTACK_KEY = {"account_id": "DEMO#attack"}
+PENDING = {None, "RECEIVED", "SCORED"}
+
+
+def _send(claim):
+    resp = portal.lam.invoke(FunctionName="validate-claim", Payload=json.dumps(claim).encode())
+    out = json.loads(resp["Payload"].read())
+    body = json.loads(out["body"]) if "body" in out else {}
+    return out.get("statusCode"), body
+
+
+def start_attack(p):
+    if portal.accounts.get_item(Key=ATTACK_KEY).get("Item"):
+        return respond(409, {"error": "a demo attack is already on the board - clear it first"})
+    today = date.today().isoformat()
+    rows = _scan_accounts()
+    people = [r for r in rows if r["kind"] == "CLAIMANT" and r.get("policy_status") != "Suspended" and r["cover_from"] <= today]
+    hospitals = [r for r in rows if r["kind"] == "HOSPITAL"]
+    if len(people) < 9 or len(hospitals) < 5:
+        return respond(500, {"error": "not enough demo accounts to run the attack"})
+    random.shuffle(people)
+    random.shuffle(hospitals)
+
+    plan = []        # (pattern, claim)
+    for n, amount in enumerate((310000, 275000, 420000)):
+        plan.append(("Upcoding", dict(patient_id=people[n]["patient_id"], provider_id=hospitals[n]["account_id"],
+                                      diagnosis="fever", procedure_code="SURG06", amount=amount)))
+    dup = dict(patient_id=people[3]["patient_id"], provider_id=hospitals[3]["account_id"],
+               diagnosis="fracture", procedure_code="XRAY02", amount=4200)
+    plan += [("Duplicate billing", dict(dup)) for _ in range(3)]
+    for n, amount in enumerate((92000, 95000, 98000)):
+        plan.append(("Provider burst", dict(patient_id=people[4 + n]["patient_id"], provider_id=hospitals[4]["account_id"],
+                                           diagnosis="back_pain", procedure_code="MRI04", amount=amount)))
+
+    items = []
+    for pattern, claim in plan:
+        claim["claim_date"] = today
+        code, body = _send(claim)
+        if code == 202 and body.get("claim_id"):
+            items.append({"claim_id": body["claim_id"], "pattern": pattern})
+    if items:
+        portal.accounts.put_item(Item={**ATTACK_KEY, "kind": "DEMO", "created_at": datetime.now(timezone.utc).isoformat(),
+                                       "items": items, "started_by": p["sub"]})
+    return respond(202 if items else 502, {"started": len(items), "planned": len(plan)})
+
+
+def attack_status(p):
+    rec = portal.accounts.get_item(Key=ATTACK_KEY).get("Item")
+    if not rec:
+        return respond(200, {"active": False})
+    out = []
+    for it in rec["items"]:
+        c = portal.claims.get_item(Key={"claim_id": it["claim_id"]}).get("Item") or {}
+        out.append({"claim_id": it["claim_id"], "pattern": it["pattern"], "amount": c.get("amount"),
+                    "procedure_code": c.get("procedure_code"), "diagnosis": c.get("diagnosis"), "provider_id": c.get("provider_id"),
+                    "status": c.get("status"), "risk_score": c.get("risk_score"), "risk_band": c.get("risk_band"),
+                    "review_queue": c.get("review_queue")})
+    done = all(c["status"] not in PENDING for c in out)
+    caught = sum(1 for c in out if c["status"] in FLAGGED or c["status"] in DECIDED or c["status"] == "MANUAL_VERIFICATION")
+    return respond(200, {"active": True, "done": done, "total": len(out), "caught": caught,
+                         "missed": sum(1 for c in out if c["status"] == "AUTO_APPROVED"), "claims": out})
+
+
+def clear_attack(p):
+    rec = portal.accounts.get_item(Key=ATTACK_KEY).get("Item")
+    if not rec:
+        return respond(200, {"cleared": 0})
+    for it in rec["items"]:
+        portal.claims.delete_item(Key={"claim_id": it["claim_id"]})
+    portal.accounts.delete_item(Key=ATTACK_KEY)
+    _cache.pop("overview", None)
+    return respond(200, {"cleared": len(rec["items"])})

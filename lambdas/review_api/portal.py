@@ -165,6 +165,8 @@ def login(body):
     role = ROLE_OF_KIND.get(acct["kind"]) if acct else None
     if not role:
         return respond(401, {"error": "unknown account"})
+    if role == "claimant" and acct.get("policy_status") == "Suspended":
+        return respond(403, {"error": "this policy is suspended - contact your insurer"})
     if role == "admin" and ADMIN_PASSCODE:
         given = str(body.get("passcode", "")).encode()
         if not hmac.compare_digest(given, ADMIN_PASSCODE.encode()):
@@ -242,6 +244,8 @@ def submit_claim(p, body):
     acct = get_account(p["sub"])
     if not acct:
         return respond(404, {"error": "account not found"})
+    if acct.get("policy_status") == "Suspended":
+        return respond(403, {"status": "REJECTED", "errors": ["this policy is suspended - contact your insurer"]})
     claim = {k: body[k] for k in ("provider_id", "claim_date", "diagnosis",
                                   "procedure_code", "amount") if k in body}
     claim["patient_id"] = acct["patient_id"]

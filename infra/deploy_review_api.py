@@ -17,6 +17,7 @@ def build_zip():
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
         z.write("lambdas/review_api/handler.py", "handler.py")
         z.write("lambdas/review_api/portal.py", "portal.py")
+        z.write("lambdas/review_api/admin.py", "admin.py")
         z.write("dashboard/index.html", "index.html")
         if os.path.exists("dashboard/dashboard.html"):
             z.write("dashboard/dashboard.html", "dashboard.html")      # served at /legacy

@@ -9,6 +9,7 @@ import boto3
 from boto3.dynamodb.conditions import Key
 from botocore.exceptions import ClientError
 
+import admin
 import portal
 from portal import respond
 
@@ -171,6 +172,18 @@ def lambda_handler(event, context):
     m = re.fullmatch(r"/api/accounts/([A-Za-z0-9_-]{1,40})", path)
     if m and method == "GET":
         return portal.guarded(event, portal.STAFF, portal.account_detail, m.group(1))
+
+    # ---- admin ----
+    ADMIN = {"admin"}
+    if method == "GET" and path == "/api/admin/overview":
+        return portal.guarded(event, ADMIN, admin.overview)
+    if method == "GET" and path == "/api/admin/health":
+        return portal.guarded(event, ADMIN, admin.health)
+    if method == "GET" and path == "/api/admin/accounts":
+        return portal.guarded(event, ADMIN, admin.list_accounts, params)
+    m = re.fullmatch(r"/api/admin/accounts/([A-Za-z0-9_-]{1,40})/status", path)
+    if m and method == "POST":
+        return portal.guarded(event, ADMIN, admin.set_status, m.group(1), body)
 
     # ---- reviewer endpoints ----
     if method == "GET" and path == "/api/queue":

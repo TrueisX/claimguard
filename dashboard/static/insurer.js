@@ -59,6 +59,22 @@
       h("p", { class: "muted", text: `${pretty(p.kind.toLowerCase())} · ${p.account_id}` }),
       h("div", { style: "margin-top:12px" }, profileRows(p)),
       h("div", { class: "section-title", text: "Activity" }), summaryRows(p.kind, r.data.summary)));
+    if (state.role === "admin" && p.kind === "CLAIMANT") {
+      const suspended = p.policy_status === "Suspended", next = suspended ? "Active" : "Suspended";
+      m.setActions([{ label: "Close" }, { label: suspended ? "Reactivate policy" : "Suspend policy", kind: suspended ? "primary" : "danger",
+        onClick: async () => {
+          const ok = await CG.confirm({ title: suspended ? "Reactivate this policy?" : "Suspend this policy?",
+            message: suspended ? `${p.full_name} will be able to sign in and file claims again.`
+              : `${p.full_name} will be signed out of new sessions and cannot file claims until the policy is reactivated. Existing claims are not changed.`,
+            confirmLabel: suspended ? "Reactivate" : "Suspend", kind: suspended ? "primary" : "danger" });
+          if (!ok) return;
+          const res = await api(`/api/admin/accounts/${encodeURIComponent(p.account_id)}/status`, { method: "POST", body: { status: next } });
+          if (!res.ok) { toast(res.data.error || "Couldn't change the policy.", "bad"); return; }
+          toast(suspended ? "Policy reactivated." : "Policy suspended.", "ok");
+          m.close(true);
+          if (CG.ui.onAccountChanged) CG.ui.onAccountChanged();
+        } }]);
+    }
   }
 
   // ---------- decision pop-ups ----------
@@ -194,6 +210,8 @@
       if (!m.isOpen()) return;
       if (!r.ok) { m.setBody(h("p", { class: "form-error", text: "Couldn't load this claim." })); return; }
       const { claim, claimant, hospital, history } = r.data;
+      if (!ui.config) { const c = await api("/api/config"); if (c.ok) ui.config = c.data; }
+      if (!m.isOpen()) return;
       const limit = Number(me.approval_limit), overLimit = Number(claim.amount) > limit;
       const open = !!claim.review_queue;
 
@@ -213,6 +231,7 @@
         open && overLimit ? h("div", { class: "banner warn" }, h("strong", { text: "Above your approval limit" }),
           h("span", { text: `You can approve up to ${inr(limit)}. You can still reject, send for verification, or escalate.` })) : null,
         claim.features ? h("div", null, h("div", { class: "section-title", text: "What the model saw" }), inputs(claim.features)) : null,
+        ui.config ? h("div", null, h("div", { class: "section-title", text: "Rules check for this claim" }), ruleChecks(ui.config, claim.features)) : null,
         h("div", { class: "case-grid" },
           claimant ? h("div", { class: "card" }, h("h3", null, "Policyholder",
             h("button", { class: "btn small", type: "button", onclick: () => openAccount(claimant.profile.account_id), text: "Full details" })),
@@ -290,35 +309,91 @@
         if (!r.ok) { content.replaceChildren(h("div", { class: "panel empty" }, h("p", { text: "Couldn't load the criteria." }))); return; }
         ui.config = r.data;
       }
-      if (ui.tab !== "criteria") return;
-      const all = ui.config.criteria || [];
-      const info = c => {
-        const id = String(c.id || c.criterion_id || "");
-        const kind = String(c.type || c.kind || c.category || (id.startsWith("L") ? "LEGIT" : "FRAUD")).toUpperCase();
-        return { id, fraud: !kind.startsWith("L"), title: c.title || c.name || c.label || id,
-          text: c.description || c.detail || c.rule || "", active: c.implemented !== false, raw: c };
-      };
-      const items = all.map(info);
-      const SKIP = new Set(["id", "criterion_id", "type", "kind", "category", "title", "name", "label", "description", "detail", "rule", "implemented"]);
-      const card = c => h("div", { class: "crit " + (c.fraud ? "" : "legit ") + (c.active ? "" : "planned") },
-        h("div", { class: "crit-top" }, h("span", { class: "crit-id", text: c.id }), h("span", { class: "crit-title", text: c.title }),
-          h("span", { class: "chip " + (c.active ? "ok" : "muted"), text: c.active ? "Active" : "Planned" })),
-        c.text ? h("p", { text: c.text }) : null,
-        h("div", { class: "attrs" }, Object.entries(c.raw).filter(([k, v]) => !SKIP.has(k) && v !== null && typeof v !== "object")
-          .map(([k, v]) => h("span", { text: `${pretty(k)}: ${fmtVal(v)}` }))));
-      const col = (title, sub, list) => h("section", { class: "panel" }, h("h2", { text: title }),
-        h("p", { class: "muted", style: "margin:4px 0 14px", text: sub }), h("div", { class: "crit-list" }, list.map(card)));
-      const fraud = items.filter(c => c.fraud), legit = items.filter(c => !c.fraud);
-      const route = Object.entries(ui.config.routing || {}).filter(([, v]) => typeof v !== "object");
-      content.replaceChildren(
-        h("section", { class: "panel" }, h("h2", { text: "How ClaimGuard decides" }),
-          h("p", { class: "muted", style: "margin-top:6px", text: `${items.filter(c => c.active).length} criteria are active and ${items.filter(c => !c.active).length} are planned. Planned rules are listed so reviewers can see what is coming, but they do not affect any claim yet.` }),
-          route.length ? h("dl", { class: "rows", style: "margin-top:12px" }, route.map(([k, v]) => row(pretty(k), fmtVal(v)))) : null),
-        h("div", { class: "crit-cols" },
-          col("Signals of fraud", "A claim looks more suspicious when these are true.", fraud),
-          col("Signals of a legitimate claim", "A claim looks safer when these are true.", legit)));
+      if (ui.tab === "criteria") content.replaceChildren(criteriaView(ui.config));
     }
   }
+
+  // ---------- shared pieces (the admin console reuses these) ----------
+  function critInfo(c) {
+    const id = String(c.id || c.criterion_id || "");
+    const v = String(c.verdict || c.type || c.kind || c.category || "").toUpperCase();
+    const fraud = id.startsWith("F") ? true : id.startsWith("L") ? false : !/^(L|NOT|SAFE|GENUINE|OK)/.test(v);
+    return { id, fraud, title: c.title || c.name || c.label || id, text: c.rule || c.description || c.detail || "",
+      example: c.example || "", active: c.implemented !== false, raw: c };
+  }
+
+  function criteriaView(config) {
+    const items = (config.criteria || []).map(critInfo);
+    const SKIP = new Set(["id", "criterion_id", "type", "kind", "category", "verdict", "title", "name", "label", "description", "detail", "rule", "example", "implemented"]);
+    const card = c => h("div", { class: "crit " + (c.fraud ? "" : "legit ") + (c.active ? "" : "planned") },
+      h("div", { class: "crit-top" }, h("span", { class: "crit-id", text: c.id }), h("span", { class: "crit-title", text: c.title }),
+        h("span", { class: "chip " + (c.active ? "ok" : "muted"), text: c.active ? "Active" : "Planned" })),
+      c.text ? h("p", { text: c.text }) : null,
+      c.example ? h("p", { class: "crit-example", text: "Example: " + c.example }) : null,
+      h("div", { class: "attrs" }, Object.entries(c.raw).filter(([k, v]) => !SKIP.has(k) && v !== null && typeof v !== "object")
+        .map(([k, v]) => h("span", { text: `${pretty(k)}: ${fmtVal(v)}` }))));
+    const col = (title, sub, list) => h("section", { class: "panel" }, h("h2", { text: title }),
+      h("p", { class: "muted", style: "margin:4px 0 14px", text: sub }), h("div", { class: "crit-list" }, list.map(card)));
+    const rt = config.routing || {}, bands = Array.isArray(rt.bands) ? rt.bands : [], trig = Array.isArray(rt.manual_verification_triggers) ? rt.manual_verification_triggers : [];
+    const BAND = { LOW: "ok", MEDIUM: "warn", HIGH: "bad" };
+    const route = bands.length ? [] : Object.entries(rt).filter(([, v]) => typeof v !== "object");
+    return h("div", { class: "main-col" },
+      h("section", { class: "panel" }, h("h2", { text: "How ClaimGuard decides" }),
+        h("p", { class: "muted", style: "margin-top:6px", text: `${items.filter(c => c.active).length} criteria are active and ${items.filter(c => !c.active).length} are planned. Planned rules are listed so reviewers can see what is coming, but they do not affect any claim yet.` }),
+        route.length ? h("dl", { class: "rows", style: "margin-top:12px" }, route.map(([k, v]) => row(pretty(k), fmtVal(v)))) : null,
+        bands.length ? h("div", { class: "section-title", text: "Routing by fraud score" }) : null,
+        bands.length ? h("div", { class: "rule-list" }, bands.map(b => h("div", { class: "rule-row" },
+          h("span", { class: "chip " + (BAND[b.band] || "muted"), text: b.band }), h("span", { class: "rule-title", text: b.action }),
+          h("span", { class: "muted num", text: "Score " + b.range }), h("span", null)))) : null,
+        trig.length ? h("div", { class: "section-title", text: "What sends a claim to manual verification" }) : null,
+        trig.length ? h("div", { class: "rule-list" }, trig.map(t => h("div", { class: "rule-row" },
+          h("span", { class: "chip " + (t.implemented ? "ok" : "muted"), text: t.implemented ? "Active" : "Planned" }),
+          h("span", { class: "rule-title", text: t.trigger }), h("span", null), h("span", null)))) : null),
+      h("div", { class: "crit-cols" },
+        col("Signals of fraud", "A claim looks more suspicious when these are true.", items.filter(c => c.fraud)),
+        col("Signals of a legitimate claim", "A claim looks safer when these are true.", items.filter(c => !c.fraud))));
+  }
+
+  // Compares this claim's stored model inputs with each active rule's threshold. The direction (at least / at most)
+  // comes from an explicit comparison in the rule text, a wording such as "at least" or "below", or a 0/1 flag with
+  // threshold 1. When none of those applies it only shows the value and does not say whether the rule fired.
+  function ruleChecks(config, features) {
+    const OPS = { ">": (a, b) => a > b, "<": (a, b) => a < b, ">=": (a, b) => a >= b, "<=": (a, b) => a <= b, "==": (a, b) => a === b };
+    const UP = /\b(at least|above|more than|over|greater than|exceeds?|or more|higher than)\b/i;
+    const DOWN = /\b(at most|no more than|below|under|less than|within|up to|or less|lower than)\b/i;
+    const rows = [];
+    for (const c of (config.criteria || []).map(critInfo)) {
+      const f = c.raw.feature;
+      if (!c.active || !f || !features || typeof features !== "object" || !(f in features)) continue;
+      const value = Number(features[f]);
+      if (!Number.isFinite(value)) continue;
+      const rule = String(c.raw.rule || ""), limit = Number(c.raw.threshold);
+      let op = null, bound = limit;
+      const m = rule.includes(f) ? /(>=|<=|==|>|<)\s*(-?\d+(?:\.\d+)?)/.exec(rule) : null;
+      if (m) { op = m[1]; bound = Number(m[2]); }
+      else if (Number.isFinite(limit)) {
+        const up = UP.test(rule), down = DOWN.test(rule);
+        if (up && !down) op = ">="; else if (down && !up) op = "<=";
+        else if (!up && !down && c.fraud && limit === 1 && (value === 0 || value === 1)) op = ">=";
+      }
+      const met = op ? OPS[op](value, bound) : null;
+      let chip;
+      if (met === null) chip = h("span", { class: "chip muted", text: "Value shown" });
+      else if (!met) chip = h("span", { class: "chip muted", text: "Not triggered" });
+      else chip = h("span", { class: "chip " + (c.fraud ? "bad" : "ok"), text: c.fraud ? "Fraud signal" : "Legitimate signal" });
+      const lim = Number.isFinite(limit) ? ` (limit ${fmtVal(limit)})` : "";
+      rows.push(h("div", { class: "rule-row" + (met ? (c.fraud ? " fired" : " good") : "") },
+        h("span", { class: "crit-id", text: c.id }),
+        h("span", { class: "rule-title", text: c.title }),
+        h("span", { class: "muted num", text: `${pretty(f)} = ${fmtVal(value)}${lim}` }),
+        chip));
+    }
+    return rows.length ? h("div", { class: "rule-list" }, rows)
+      : h("p", { class: "muted", text: "No rule in the list can be compared with this claim's stored inputs." });
+  }
+
+  CG.ui = { pretty, row, fmtVal, when, score100, statusChip, queueChip, riskMeter, profileRows, summaryRows, openAccount,
+    criteriaView, PROC, DX, STATUS, QUEUES };
 
   CG.apps.insurer = { mount };
 })();

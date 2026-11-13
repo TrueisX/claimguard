@@ -1,5 +1,6 @@
 """Check the new website and the claimant flow on the live API."""
 import json
+import random
 import time
 import urllib.error
 import urllib.request
@@ -9,6 +10,7 @@ API_URL = next(l.split("=", 1)[1].strip() for l in open(".env")
                if l.startswith("API_URL="))
 BASE = API_URL.rsplit("/claims", 1)[0].rstrip("/")
 failures = []
+ME = f"PT{random.randint(100, 199):05d}"      # a different policyholder every run
 
 
 def call(method, path, body=None, token=None, raw=False):
@@ -42,7 +44,7 @@ check("home page is the new site", "ClaimGuard" in text and "/static/app.js" in 
 check("unknown static file", call("GET", "/static/handler.py", raw=True)[0], 404)
 
 print("\nClaimant PT00120")
-s, d = call("POST", "/api/login", {"account_id": "PT00120"})
+s, d = call("POST", "/api/login", {"account_id": ME})
 check("login", s, 200)
 token = d["token"]
 s, d = call("GET", "/api/hospitals", token=token)
@@ -51,8 +53,8 @@ check("300 hospitals", len(d["hospitals"]), 300)
 check("hospitals need sign-in", call("GET", "/api/hospitals")[0], 401)
 
 today = date.today().isoformat()
-claim = {"provider_id": "P0010", "claim_date": today, "diagnosis": "fever",
-         "procedure_code": "CONS01", "amount": 820, "patient_id": "PT00001"}   # tries to file as someone else
+claim = {"provider_id": f"P{random.randint(0, 299):04d}", "claim_date": today, "diagnosis": "fever",
+         "procedure_code": "CONS01", "amount": random.randint(700, 950), "patient_id": "PT00001"}   # tries to file as someone else
 s, d = call("POST", "/api/my/claims", claim, token=token)
 check("submit normal claim", s, 202)
 cid = d.get("claim_id")
@@ -66,7 +68,7 @@ for _ in range(40):
     if final and final["status"] not in ("RECEIVED", "SCORED"):
         break
 print()
-check("claim is listed under PT00120, not the patient_id sent", final is not None, True)
+check("claim is listed under the signed-in claimant, not the patient_id sent", final is not None, True)
 check("normal claim ends AUTO_APPROVED", final and final["status"], "AUTO_APPROVED")
 leaks = [k for k in ("risk_score", "risk_band", "features") if final and k in final]
 check("claimant never sees risk data", leaks, [])

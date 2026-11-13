@@ -2,6 +2,7 @@
 # Build the image, load it into your local Kubernetes cluster and deploy it. Safe to re-run:
 # re-running also refreshes the expiring Learner Lab keys.
 set -euo pipefail
+export MSYS_NO_PATHCONV=1
 cd "$(dirname "$0")/.."
 source .venv/Scripts/activate 2>/dev/null || source .venv/bin/activate 2>/dev/null || true
 docker info >/dev/null 2>&1 || { echo "Docker is not running. Start Docker Desktop and try again."; exit 1; }
@@ -9,6 +10,7 @@ command -v kubectl >/dev/null || { echo "kubectl not found. Turn on Kubernetes i
 CTX=$(kubectl config current-context 2>/dev/null || true)
 [ -n "$CTX" ] || { echo "No Kubernetes cluster is selected. Start one first."; exit 1; }
 echo "Using Kubernetes context: $CTX"
+kubectl cluster-info >/dev/null 2>&1 || { echo "The cluster is not running. For minikube run: minikube start --driver=docker   then re-run this script."; exit 1; }
 IMAGE=claimguard-web:1
 ENVFILE=deploy/.container.env
 trap 'rm -f "$ENVFILE"' EXIT
@@ -27,12 +29,12 @@ kubectl apply -f deploy/k8s/configmap.yaml -f deploy/k8s/service.yaml -f deploy/
 kubectl -n claimguard rollout restart deployment/claimguard-web
 kubectl -n claimguard rollout status deployment/claimguard-web --timeout=180s
 
-kubectl -n claimguard port-forward svc/claimguard-web 8081:80 >/dev/null 2>&1 &
+kubectl -n claimguard port-forward svc/claimguard-web 18081:80 >/dev/null 2>&1 &
 PF=$!
 trap 'kill $PF 2>/dev/null; rm -f "$ENVFILE"' EXIT
 sleep 3
-bash deploy/smoke.sh http://localhost:8081
+bash deploy/smoke.sh http://localhost:18081
 kubectl -n claimguard get pods
 echo
-echo "To open the site, run:  kubectl -n claimguard port-forward svc/claimguard-web 8081:80"
-echo "then visit http://localhost:8081"
+echo "To open the site, run:  kubectl -n claimguard port-forward svc/claimguard-web 18081:80"
+echo "then visit http://localhost:18081"

@@ -1,7 +1,7 @@
 "use strict";
 /* Platform admin console: overview, system health, accounts, rules and model. */
 (() => {
-  const { h, api, toast, modal, inr, dateFmt, state } = CG;
+  const { h, svg, api, toast, modal, inr, dateFmt, state } = CG;
   const U = () => CG.ui;                       // helpers shared from insurer.js, read when needed
   const pctText = v => v === null || v === undefined ? "n/a" : v + "%";
 
@@ -25,7 +25,7 @@
     const me = state.profile;
     const ui = { tab: "overview", overview: null, health: null, accounts: null, kind: "", q: "", config: null };
     const content = h("div", { class: "main-col" });
-    const TABS = [["overview", "Overview"], ["health", "System health"], ["accounts", "Accounts"], ["rules", "Rules & model"], ["attack", "Attack mode"]];
+    const TABS = [["overview", "Overview"], ["health", "System health"], ["accounts", "Accounts"], ["rules", "Rules & model"], ["graph", "Fraud network"], ["attack", "Attack mode"]];
     const tabEls = TABS.map(([k, label]) => h("button", { class: "tab", type: "button", role: "tab", "data-tab": k, onclick: () => setTab(k), text: label }));
 
     root.replaceChildren(CG.topbar(), h("main", { class: "page" },
@@ -40,7 +40,7 @@
       clearTimeout(ui.timer);
       tabEls.forEach(el => el.setAttribute("aria-selected", String(el.dataset.tab === t)));
       content.replaceChildren(h("p", { class: "muted", text: "Loading..." }));
-      ({ overview: loadOverview, health: loadHealth, accounts: loadAccounts, rules: loadRules, attack: loadAttack })[t]();
+      ({ overview: loadOverview, health: loadHealth, accounts: loadAccounts, rules: loadRules, graph: loadGraph, attack: loadAttack })[t]();
     }
     const failed = (what, retry) => content.replaceChildren(h("div", { class: "panel empty" }, h("p", { text: `Couldn't load ${what}.` }),
       h("button", { class: "btn", type: "button", onclick: retry, text: "Try again" })));
@@ -146,6 +146,95 @@
       return h("span", { class: "chip muted", text: U().pretty(a.kind.toLowerCase()) });
     }
 
+
+
+    // ---------- fraud network ----------
+    async function loadGraph() {
+      const r = await api("/api/admin/graph");
+      if (!r.ok) return failed("the fraud network", loadGraph);
+      if (ui.tab !== "graph") return;
+      const d = r.data, u = U();
+      const sentence = f => f.type === "hub"
+        ? `${f.label} has flagged claims from ${f.patients} different policyholders, ${inr(f.amount)} in total. One hospital behind many suspicious patients can mean a billing ring.`
+        : f.type === "hopper"
+          ? `${f.label} has flagged claims at ${f.hospitals} different hospitals, ${inr(f.amount)} in total. Moving between hospitals can hide a pattern.`
+          : `${f.label} has ${f.claims} flagged claims at ${f.hospital}, ${inr(f.amount)} in total. Repeated bills for the same hospital and patient look like duplicate billing.`;
+      content.replaceChildren(
+        h("section", { class: "panel" },
+          h("div", { class: "panel-head" }, h("h2", { text: "Who is connected to whom" }),
+            h("button", { class: "btn", type: "button", onclick: () => setTab("graph"), text: "Refresh" })),
+          h("p", { class: "muted", style: "margin:4px 0 12px", text: `Every line is a policyholder and a hospital linked by at least one claim scored ${Math.round(d.threshold * 100)} or above. Only claims that went through the live pipeline are drawn, not the historical data.` }),
+          d.nodes.length ? graphView(d) : h("p", { class: "empty", text: "No flagged claims right now. Launch Attack mode to watch a ring appear here." })),
+        h("section", { class: "panel" }, h("h2", { text: "What stands out" }),
+          d.findings.length ? h("ul", { class: "facts", style: "margin-top:10px" }, d.findings.map(f => h("li", { class: "flag", text: sentence(f) })))
+            : h("p", { class: "muted", style: "margin-top:8px", text: d.nodes.length ? "No repeated bills, hub hospitals or hopping policyholders in the flagged claims." : "Nothing to show yet." })));
+    }
+
+    // Small force layout, run once and drawn still. A seeded random start makes it look the same every time.
+    function layout(nodes, edges, W, H) {
+      let seed = 7;
+      const rnd = () => { seed = (seed + 0x6D2B79F5) | 0; let t = Math.imul(seed ^ (seed >>> 15), 1 | seed); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
+      const byId = new Map(nodes.map(n => [n.id, n]));
+      nodes.forEach(n => { n.x = W / 2 + (rnd() - 0.5) * W * 0.7; n.y = H / 2 + (rnd() - 0.5) * H * 0.7; n.vx = 0; n.vy = 0; });
+      const links = edges.map(e => [byId.get(e.source), byId.get(e.target)]);
+      for (let step = 0; step < 320; step++) {
+        const cool = 1 - step / 320;
+        for (let i = 0; i < nodes.length; i++) for (let j = i + 1; j < nodes.length; j++) {
+          const a = nodes[i], b = nodes[j];
+          let dx = a.x - b.x, dy = a.y - b.y, d2 = dx * dx + dy * dy || 0.01;
+          const f = 5200 / d2, d = Math.sqrt(d2);
+          dx = dx / d * f; dy = dy / d * f;
+          a.vx += dx; a.vy += dy; b.vx -= dx; b.vy -= dy;
+        }
+        for (const [a, b] of links) {
+          const dx = b.x - a.x, dy = b.y - a.y, d = Math.sqrt(dx * dx + dy * dy) || 1, f = (d - 95) * 0.04;
+          a.vx += dx / d * f; a.vy += dy / d * f; b.vx -= dx / d * f; b.vy -= dy / d * f;
+        }
+        for (const n of nodes) {
+          n.vx += (W / 2 - n.x) * 0.004; n.vy += (H / 2 - n.y) * 0.004;
+          n.x += Math.max(-14, Math.min(14, n.vx)) * cool; n.y += Math.max(-14, Math.min(14, n.vy)) * cool;
+          n.vx *= 0.6; n.vy *= 0.6;
+        }
+      }
+      const xs = nodes.map(n => n.x), ys = nodes.map(n => n.y);
+      const x0 = Math.min(...xs), x1 = Math.max(...xs), y0 = Math.min(...ys), y1 = Math.max(...ys);
+      const sx = (W - 140) / Math.max(1, x1 - x0), sy = (H - 110) / Math.max(1, y1 - y0), k = Math.min(sx, sy, 2.2);
+      nodes.forEach(n => { n.x = W / 2 + (n.x - (x0 + x1) / 2) * k; n.y = H / 2 + (n.y - (y0 + y1) / 2) * k; });
+    }
+
+    function graphView(d) {
+      const u = U(), W = 960, H = 560;
+      layout(d.nodes, d.edges, W, H);
+      const byId = new Map(d.nodes.map(n => [n.id, n]));
+      const tone = risk => risk >= d.high ? "var(--bad)" : "#D9930D";
+      const edgeEls = d.edges.map(e => {
+        const a = byId.get(e.source), b = byId.get(e.target);
+        return svg("g", null,
+          svg("line", { x1: a.x, y1: a.y, x2: b.x, y2: b.y, stroke: tone(e.max_risk), "stroke-width": 1.5 + Math.min(e.claims, 5) * 1.3, "stroke-linecap": "round", opacity: ".75" }),
+          e.claims > 1 ? svg("text", { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 - 5, "text-anchor": "middle", class: "g-edge-label" }, `×${e.claims}`) : null);
+      });
+      const open = n => u.openAccount(n.id);
+      const nodeEls = d.nodes.map(n => {
+        const hosp = n.kind === "HOSPITAL";
+        const shape = hosp
+          ? svg("rect", { x: n.x - 14, y: n.y - 14, width: 28, height: 28, rx: 6, fill: "var(--accent)" })
+          : svg("circle", { cx: n.x, cy: n.y, r: 7 + Math.min(n.claims, 4) * 2, fill: tone(n.max_risk), stroke: "#fff", "stroke-width": 2 });
+        const label = hosp ? n.id : n.id;
+        const g = svg("g", { class: "g-node", tabindex: "0", role: "button", "aria-label": `${hosp ? "Hospital" : "Policyholder"} ${n.label}, ${n.claims} flagged ${n.claims === 1 ? "claim" : "claims"}` },
+          svg("title", null, `${n.label}: ${n.claims} flagged ${n.claims === 1 ? "claim" : "claims"}, ${inr(n.amount)}`),
+          shape,
+          svg("text", { x: n.x, y: n.y + (hosp ? 30 : 24 + Math.min(n.claims, 4) * 2), "text-anchor": "middle", class: "g-label" + (hosp ? " g-hosp" : "") }, n.id));
+        g.addEventListener("click", () => open(n));
+        g.addEventListener("keydown", e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); open(n); } });
+        return g;
+      });
+      const legend = h("div", { class: "g-legend" },
+        h("span", null, h("i", { class: "sq" }), " Hospital"), h("span", null, h("i", { class: "ci bad" }), " Policyholder, priority-level risk"),
+        h("span", null, h("i", { class: "ci mid" }), " Policyholder, manual-verification risk"), h("span", { text: "Thicker line and × number mean more claims between the pair. Click a node for details." }));
+      return h("div", null,
+        h("div", { class: "graph-wrap" }, svg("svg", { viewBox: `0 0 ${W} ${H}`, class: "graph", role: "group", "aria-label": "Network of flagged claims between policyholders and hospitals" }, edgeEls, nodeEls)),
+        legend);
+    }
 
     // ---------- attack mode ----------
     const PATTERNS = [

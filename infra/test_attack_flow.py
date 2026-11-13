@@ -67,6 +67,15 @@ try:
     check("the three upcoding claims were all sent to a human", sum(1 for c in st["claims"] if c["pattern"] == "Upcoding" and c["review_queue"]), 3)
     print(f"  caught {st['caught']} of {st['total']}, slipped through {st['missed']}")
 
+    s, g = call("GET", "/api/admin/graph", token=admin)
+    check("graph loads", s, 200)
+    ids = {n["id"] for n in g["nodes"]}
+    check("every flagged attack claim's policyholder and hospital are in the graph",
+          all(c["provider_id"] in ids for c in st["claims"] if c["review_queue"]), True)
+    for f in g["findings"][:5]:
+        print(f"    finding: {f['type']} - {f['label']}" + (f" ({f['patients']} policyholders)" if f["type"] == "hub" else f" ({f['claims']} claims)" if f["type"] == "repeat" else ""))
+    check("graph needs the admin role", call("GET", "/api/admin/graph", token=insurer)[0], 403)
+
     s, q = call("GET", "/api/queue", token=insurer)
     waiting = {i["claim_id"] for i in q["items"]}
     flagged = [c["claim_id"] for c in st["claims"] if c["review_queue"]]

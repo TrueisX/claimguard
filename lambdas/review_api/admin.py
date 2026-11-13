@@ -258,6 +258,7 @@ def start_attack(p):
     if items:
         portal.accounts.put_item(Item={**ATTACK_KEY, "kind": "DEMO", "created_at": datetime.now(timezone.utc).isoformat(),
                                        "items": items, "started_by": p["sub"]})
+    _cache.pop("graph", None)
     return respond(202 if items else 502, {"started": len(items), "planned": len(plan)})
 
 
@@ -286,4 +287,59 @@ def clear_attack(p):
         portal.claims.delete_item(Key={"claim_id": it["claim_id"]})
     portal.accounts.delete_item(Key=ATTACK_KEY)
     _cache.pop("overview", None)
+    _cache.pop("graph", None)
     return respond(200, {"cleared": len(rec["items"])})
+
+
+# ---------- fraud network ----------
+def graph(p):
+    def build():
+        route = portal.accounts.get_item(Key={"account_id": "CONFIG#routing"}).get("Item", {})
+        low = float(route.get("low_max", 0.3))
+        rows = [r for r in _scan_claims() if r.get("status") != "HISTORY" and r.get("risk_score") is not None
+                and float(r["risk_score"]) >= low]
+        pairs = {}
+        for r in rows:
+            e = pairs.setdefault((r["patient_id"], r["provider_id"]),
+                                 {"source": r["patient_id"], "target": r["provider_id"], "claims": 0, "amount": 0.0, "max_risk": 0.0})
+            e["claims"] += 1
+            e["amount"] += float(r["amount"])
+            e["max_risk"] = max(e["max_risk"], float(r["risk_score"]))
+        edges = sorted(pairs.values(), key=lambda e: (-e["max_risk"], -e["claims"]))[:60]
+
+        who = {a["account_id"]: a for a in _scan_accounts()}
+        nodes = {}
+        for e in edges:
+            for nid, kind in ((e["source"], "CLAIMANT"), (e["target"], "HOSPITAL")):
+                a = who.get(nid) or {}
+                n = nodes.setdefault(nid, {"id": nid, "kind": kind, "label": a.get("full_name") or a.get("name") or nid,
+                                           "claims": 0, "amount": 0.0, "max_risk": 0.0})
+                n["claims"] += e["claims"]
+                n["amount"] += e["amount"]
+                n["max_risk"] = max(n["max_risk"], e["max_risk"])
+
+        findings = []
+        for n in nodes.values():
+            if n["kind"] == "HOSPITAL":
+                mine = [e for e in edges if e["target"] == n["id"]]
+                if len(mine) >= 3:
+                    findings.append({"type": "hub", "provider_id": n["id"], "label": n["label"], "patients": len(mine),
+                                     "claims": n["claims"], "amount": round(n["amount"], 2), "max_risk": n["max_risk"]})
+            else:
+                mine = [e for e in edges if e["source"] == n["id"]]
+                if len(mine) >= 3:
+                    findings.append({"type": "hopper", "patient_id": n["id"], "label": n["label"], "hospitals": len(mine),
+                                     "claims": n["claims"], "amount": round(n["amount"], 2), "max_risk": n["max_risk"]})
+        for e in edges:
+            if e["claims"] >= 2:
+                findings.append({"type": "repeat", "patient_id": e["source"], "provider_id": e["target"], "claims": e["claims"],
+                                 "label": (nodes[e["source"]]["label"]), "hospital": nodes[e["target"]]["label"],
+                                 "amount": round(e["amount"], 2), "max_risk": e["max_risk"]})
+        findings.sort(key=lambda f: -f["max_risk"])
+        for e in edges:
+            e["amount"], e["max_risk"] = round(e["amount"], 2), round(e["max_risk"], 4)
+        for n in nodes.values():
+            n["amount"], n["max_risk"] = round(n["amount"], 2), round(n["max_risk"], 4)
+        return {"threshold": low, "high": float(route.get("high_min", 0.7)), "claims": len(rows),
+                "nodes": list(nodes.values()), "edges": edges, "findings": findings}
+    return respond(200, _cached("graph", 3, build))

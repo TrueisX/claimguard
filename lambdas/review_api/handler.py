@@ -179,6 +179,8 @@ def lambda_handler(event, context):
         return portal.guarded(event, ADMIN, admin.overview)
     if method == "GET" and path == "/api/admin/health":
         return portal.guarded(event, ADMIN, admin.health)
+    if method == "GET" and path == "/api/admin/graph":
+        return portal.guarded(event, ADMIN, admin.graph)
     if method == "GET" and path == "/api/admin/accounts":
         return portal.guarded(event, ADMIN, admin.list_accounts, params)
     if path == "/api/admin/attack":

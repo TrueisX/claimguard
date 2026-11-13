@@ -42,3 +42,17 @@
   .role-badge { font-size: .75rem; padding: 3px 9px; }
   .topbar .btn { padding: 7px 11px; }
 }
+
+.graph-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 12px; background: #FBFCFD; }
+.graph { display: block; width: 100%; min-width: 720px; height: auto; }
+.g-node { cursor: pointer; outline: none; }
+.g-node:focus-visible rect, .g-node:focus-visible circle { stroke: var(--ink); stroke-width: 3; }
+.g-label { font: 600 11px var(--body); fill: var(--ink); pointer-events: none; }
+.g-hosp { font-size: 12px; }
+.g-edge-label { font: 700 12px var(--body); fill: var(--ink); paint-order: stroke; stroke: #FBFCFD; stroke-width: 3px; }
+.g-legend { display: flex; flex-wrap: wrap; gap: 6px 18px; margin-top: 10px; font-size: .875rem; color: var(--muted); align-items: center; }
+.g-legend i { display: inline-block; width: 13px; height: 13px; vertical-align: -2px; }
+.g-legend .sq { background: var(--accent); border-radius: 3px; }
+.g-legend .ci { border-radius: 50%; }
+.g-legend .ci.bad { background: var(--bad); }
+.g-legend .ci.mid { background: #D9930D; }

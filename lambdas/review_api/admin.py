@@ -296,8 +296,8 @@ def graph(p):
     def build():
         route = portal.accounts.get_item(Key={"account_id": "CONFIG#routing"}).get("Item", {})
         low = float(route.get("low_max", 0.3))
-        rows = [r for r in _scan_claims() if r.get("status") != "HISTORY" and r.get("risk_score") is not None
-                and float(r["risk_score"]) >= low]
+        rows = [r for r in _scan_claims() if r.get("status") not in ("HISTORY", "REVIEWER_APPROVED") and r.get("risk_score") is not None
+                and float(r["risk_score"]) >= low]            # a claim a reviewer cleared is no longer suspicious
         pairs = {}
         for r in rows:
             e = pairs.setdefault((r["patient_id"], r["provider_id"]),

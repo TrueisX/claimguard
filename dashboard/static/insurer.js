@@ -220,6 +220,7 @@
           h("div", null, h("h3", { text: `${PROC[claim.procedure_code] || claim.procedure_code} · ${DX[claim.diagnosis] || claim.diagnosis}` }),
             h("p", { class: "muted", text: `${dateFmt(claim.claim_date)} · ${hospital ? hospital.profile.name : claim.provider_id} · ${claim.claim_id.slice(0, 8)}` })),
           h("div", { class: "amount num", text: inr(claim.amount) })),
+        ui.config ? explainBanner(ui.config, claim) : null,
         h("div", { class: "case-grid" },
           h("div", { class: "card" }, h("h3", null, "Fraud risk", queueChip(claim.review_queue)),
             riskMeter(claim.risk_score, claim.review_queue, true),
@@ -357,11 +358,11 @@
   // Compares this claim's stored model inputs with each active rule's threshold. The direction (at least / at most)
   // comes from an explicit comparison in the rule text, a wording such as "at least" or "below", or a 0/1 flag with
   // threshold 1. When none of those applies it only shows the value and does not say whether the rule fired.
-  function ruleChecks(config, features) {
+  function evalRules(config, features) {
     const OPS = { ">": (a, b) => a > b, "<": (a, b) => a < b, ">=": (a, b) => a >= b, "<=": (a, b) => a <= b, "==": (a, b) => a === b };
     const UP = /\b(at least|above|more than|over|greater than|exceeds?|or more|higher than)\b/i;
     const DOWN = /\b(at most|no more than|below|under|less than|within|up to|or less|lower than)\b/i;
-    const rows = [];
+    const out = [];
     for (const c of (config.criteria || []).map(critInfo)) {
       const f = c.raw.feature;
       if (!c.active || !f || !features || typeof features !== "object" || !(f in features)) continue;
@@ -376,20 +377,36 @@
         if (up && !down) op = ">="; else if (down && !up) op = "<=";
         else if (!up && !down && c.fraud && limit === 1 && (value === 0 || value === 1)) op = ">=";
       }
-      const met = op ? OPS[op](value, bound) : null;
+      out.push({ c, f, value, limit, met: op ? OPS[op](value, bound) : null });
+    }
+    return out;
+  }
+
+  function ruleChecks(config, features) {
+    const rows = evalRules(config, features).map(({ c, f, value, limit, met }) => {
       let chip;
       if (met === null) chip = h("span", { class: "chip muted", text: "Value shown" });
       else if (!met) chip = h("span", { class: "chip muted", text: "Not triggered" });
       else chip = h("span", { class: "chip " + (c.fraud ? "bad" : "ok"), text: c.fraud ? "Fraud signal" : "Legitimate signal" });
       const lim = Number.isFinite(limit) ? ` (limit ${fmtVal(limit)})` : "";
-      rows.push(h("div", { class: "rule-row" + (met ? (c.fraud ? " fired" : " good") : "") },
-        h("span", { class: "crit-id", text: c.id }),
-        h("span", { class: "rule-title", text: c.title }),
-        h("span", { class: "muted num", text: `${pretty(f)} = ${fmtVal(value)}${lim}` }),
-        chip));
-    }
+      return h("div", { class: "rule-row" + (met ? (c.fraud ? " fired" : " good") : "") },
+        h("span", { class: "crit-id", text: c.id }), h("span", { class: "rule-title", text: c.title }),
+        h("span", { class: "muted num", text: `${pretty(f)} = ${fmtVal(value)}${lim}` }), chip);
+    });
     return rows.length ? h("div", { class: "rule-list" }, rows)
       : h("p", { class: "muted", text: "No rule in the list can be compared with this claim's stored inputs." });
+  }
+
+  // One plain-English box that sums up the rules check. It names only rules that actually fired, and says so when none did.
+  function explainBanner(config, claim) {
+    const res = evalRules(config, claim.features), fired = res.filter(r => r.met && r.c.fraud), good = res.filter(r => r.met && !r.c.fraud);
+    const flagged = !!claim.review_queue;
+    const say = r => `${r.c.title} (${pretty(r.f).toLowerCase()} ${fmtVal(r.value)})`;
+    let text = fired.length ? fired.map(say).join("; ") + "."
+      : "No single rule explains the score. The model combined several weaker signals, such as the hospital's recent billing and this policyholder's history.";
+    if (good.length) text += " Pointing the other way: " + good.map(say).join("; ") + ".";
+    return h("div", { class: "banner " + (fired.length || flagged ? "warn" : "info") },
+      h("strong", { text: flagged ? "Why this claim was flagged" : "What the model noticed" }), h("span", { text }));
   }
 
   CG.ui = { pretty, row, fmtVal, when, score100, statusChip, queueChip, riskMeter, profileRows, summaryRows, openAccount,

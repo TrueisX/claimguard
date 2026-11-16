@@ -11,3 +11,4 @@ lambdas/*.zip
 out_*.json
 deploy/.container.env
 sagemaker_jobs/last_training.json
+sagemaker_jobs/endpoint.json
